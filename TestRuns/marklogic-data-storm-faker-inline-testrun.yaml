@@ -1,11 +1,11 @@
 apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
-  name: marklogic-data-storm-faker-inline-tousends
+  name: marklogic-data-storm-faker-inline-thirty
   namespace: ml
   labels:
     app: k6-load-test
-    test-type: marklogic-faker-inline-tousends
+    test-type: marklogic-faker-inline-thirty
 spec:
   parallelism: 10
   
@@ -31,7 +31,7 @@ spec:
       - name: K6_PROMETHEUS_RW_PUSH_INTERVAL
         value: "5s"
       - name: K6_TAG_TESTID
-        value: "marklogic-data-storm-faker-inline-tousends"
+        value: "marklogic-data-storm-faker-inline-thirty"
       # MarkLogic Connection Settings
       - name: ML_HOST
         value: "marklogic-haproxy.ml.svc.cluster.local"
@@ -78,7 +78,7 @@ spec:
       # Staging Configuration - Ramping burst every 1 minute
       # Format: "duration:target_vus,duration:target_vus,..."
       - name: K6_STAGES
-        value: "2m:500,18m:500"
+        value: "2m:500,32m:500"
       
       # Alternative ramping configuration (uncomment to use instead of K6_STAGES)
       # - name: RAMP_UP_INTERVAL
