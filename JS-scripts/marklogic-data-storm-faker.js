@@ -1,0 +1,614 @@
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import encoding from 'k6/encoding';
+import { Counter, Rate, Trend } from 'k6/metrics';
+import { faker } from 'https://esm.sh/@faker-js/faker';
+
+// Custom metrics
+const documentsWritten = new Counter('documents_written');
+const writeErrors = new Rate('write_errors');
+const writeDuration = new Trend('write_duration');
+
+// Document-level metrics
+const documentSize = new Trend('document_size_bytes');
+const totalBytesWritten = new Counter('total_bytes_written');
+
+// Batch processing metrics
+const batchProcessingTime = new Trend('batch_processing_time');
+const successfulBatches = new Rate('batch_success_rate');
+const documentsPerSecond = new Trend('documents_per_second');
+
+// Error classification metrics
+const clientErrors = new Counter('http_4xx_errors');
+const serverErrors = new Counter('http_5xx_errors');
+const timeoutErrors = new Counter('timeout_errors');
+
+// Generate random document using faker
+// Supports multiple document types via comma-separated DOC_TYPE env variable
+// e.g., DOC_TYPE="standard,financial,ecommerce" will randomly pick from these types
+function generateRandomDocument() {
+  // Get document type(s) from env or default to 'standard'
+  const docTypeEnv = __ENV.DOC_TYPE || 'standard';
+  const docTypes = docTypeEnv.split(',').map(t => t.trim().toLowerCase());
+  
+  // Randomly select one of the specified document types
+  const docType = faker.helpers.arrayElement(docTypes);
+  
+  // Add metadata about document type if enabled
+  const includeMetadata = __ENV.INCLUDE_DOC_METADATA === 'true';
+  
+  let doc;
+  switch (docType) {
+    case 'minimal':
+      doc = generateMinimalDocument();
+      break;
+    case 'extended':
+      doc = generateExtendedDocument();
+      break;
+    case 'financial':
+      doc = generateFinancialDocument();
+      break;
+    case 'ecommerce':
+      doc = generateEcommerceDocument();
+      break;
+    case 'healthcare':
+      doc = generateHealthcareDocument();
+      break;
+    case 'iot':
+      doc = generateIoTDocument();
+      break;
+    case 'social':
+      doc = generateSocialDocument();
+      break;
+    case 'log':
+      doc = generateLogDocument();
+      break;
+    default:
+      doc = generateStandardDocument();
+  }
+  
+  // Optionally add document type metadata
+  if (includeMetadata) {
+    doc._metadata = {
+      doc_type: docType,
+      generated_at: new Date().toISOString(),
+      generator: 'k6-faker'
+    };
+  }
+  
+  return doc;
+}
+
+// Standard document (similar to original)
+function generateStandardDocument() {
+  return {
+    first_name: faker.person.firstName(),
+    last_name: faker.person.lastName(),
+    email: faker.internet.email(),
+    ip_address: faker.internet.ip(),
+    city: faker.location.city(),
+    state: faker.location.state({ abbreviated: true }),
+    postal_code: faker.location.zipCode(),
+    country: faker.location.country(),
+    phone_number: faker.phone.number(),
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Minimal document for high-throughput testing
+function generateMinimalDocument() {
+  return {
+    id: faker.string.uuid(),
+    name: faker.person.fullName(),
+    email: faker.internet.email(),
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Extended document with more fields
+function generateExtendedDocument() {
+  return {
+    id: faker.string.uuid(),
+    first_name: faker.person.firstName(),
+    last_name: faker.person.lastName(),
+    email: faker.internet.email(),
+    username: faker.internet.userName(),
+    avatar: faker.image.avatar(),
+    ip_address: faker.internet.ip(),
+    mac_address: faker.internet.mac(),
+    user_agent: faker.internet.userAgent(),
+    address: {
+      street: faker.location.streetAddress(),
+      city: faker.location.city(),
+      state: faker.location.state(),
+      postal_code: faker.location.zipCode(),
+      country: faker.location.country(),
+      latitude: faker.location.latitude(),
+      longitude: faker.location.longitude()
+    },
+    phone: {
+      home: faker.phone.number(),
+      mobile: faker.phone.number(),
+      work: faker.phone.number()
+    },
+    company: {
+      name: faker.company.name(),
+      department: faker.commerce.department(),
+      job_title: faker.person.jobTitle(),
+      catch_phrase: faker.company.catchPhrase()
+    },
+    bio: faker.lorem.paragraph(),
+    created_at: faker.date.past().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+// Financial document
+function generateFinancialDocument() {
+  return {
+    transaction_id: faker.string.uuid(),
+    account_number: faker.finance.accountNumber(),
+    account_name: faker.finance.accountName(),
+    routing_number: faker.finance.routingNumber(),
+    amount: parseFloat(faker.finance.amount()),
+    currency: faker.finance.currencyCode(),
+    transaction_type: faker.helpers.arrayElement(['credit', 'debit', 'transfer', 'payment']),
+    status: faker.helpers.arrayElement(['pending', 'completed', 'failed', 'cancelled']),
+    merchant: {
+      name: faker.company.name(),
+      category: faker.commerce.department(),
+      mcc: faker.finance.maskedNumber(4)
+    },
+    card: {
+      type: faker.finance.creditCardIssuer(),
+      last_four: faker.finance.maskedNumber(4),
+      expiry: faker.date.future().toISOString().slice(0, 7)
+    },
+    customer: {
+      name: faker.person.fullName(),
+      email: faker.internet.email()
+    },
+    location: {
+      city: faker.location.city(),
+      country: faker.location.countryCode()
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
+// E-commerce document
+function generateEcommerceDocument() {
+  const quantity = faker.number.int({ min: 1, max: 10 });
+  const price = parseFloat(faker.commerce.price());
+  
+  return {
+    order_id: faker.string.uuid(),
+    customer: {
+      id: faker.string.uuid(),
+      name: faker.person.fullName(),
+      email: faker.internet.email(),
+      phone: faker.phone.number()
+    },
+    shipping_address: {
+      street: faker.location.streetAddress(),
+      city: faker.location.city(),
+      state: faker.location.state(),
+      postal_code: faker.location.zipCode(),
+      country: faker.location.country()
+    },
+    items: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => ({
+      product_id: faker.string.uuid(),
+      name: faker.commerce.productName(),
+      description: faker.commerce.productDescription(),
+      category: faker.commerce.department(),
+      price: parseFloat(faker.commerce.price()),
+      quantity: faker.number.int({ min: 1, max: 5 }),
+      sku: faker.string.alphanumeric(10).toUpperCase()
+    })),
+    subtotal: price * quantity,
+    tax: parseFloat((price * quantity * 0.08).toFixed(2)),
+    shipping: parseFloat(faker.commerce.price({ min: 5, max: 25 })),
+    total: parseFloat((price * quantity * 1.08 + 10).toFixed(2)),
+    payment_method: faker.helpers.arrayElement(['credit_card', 'debit_card', 'paypal', 'apple_pay']),
+    status: faker.helpers.arrayElement(['pending', 'processing', 'shipped', 'delivered', 'cancelled']),
+    created_at: faker.date.recent().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+// Healthcare document
+function generateHealthcareDocument() {
+  return {
+    patient_id: faker.string.uuid(),
+    medical_record_number: faker.string.alphanumeric(10).toUpperCase(),
+    patient: {
+      first_name: faker.person.firstName(),
+      last_name: faker.person.lastName(),
+      date_of_birth: faker.date.birthdate({ min: 18, max: 90, mode: 'age' }).toISOString().slice(0, 10),
+      gender: faker.helpers.arrayElement(['male', 'female', 'other']),
+      blood_type: faker.helpers.arrayElement(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']),
+      contact: {
+        phone: faker.phone.number(),
+        email: faker.internet.email(),
+        emergency_contact: faker.person.fullName(),
+        emergency_phone: faker.phone.number()
+      },
+      address: {
+        street: faker.location.streetAddress(),
+        city: faker.location.city(),
+        state: faker.location.state(),
+        postal_code: faker.location.zipCode()
+      }
+    },
+    insurance: {
+      provider: faker.company.name(),
+      policy_number: faker.string.alphanumeric(12).toUpperCase(),
+      group_number: faker.string.alphanumeric(8).toUpperCase()
+    },
+    visit: {
+      type: faker.helpers.arrayElement(['routine', 'emergency', 'follow-up', 'specialist']),
+      department: faker.helpers.arrayElement(['cardiology', 'neurology', 'orthopedics', 'general', 'pediatrics']),
+      provider: `Dr. ${faker.person.lastName()}`,
+      chief_complaint: faker.lorem.sentence(),
+      diagnosis_codes: Array.from({ length: faker.number.int({ min: 1, max: 3 }) }, () => 
+        faker.string.alphanumeric(5).toUpperCase()
+      ),
+      notes: faker.lorem.paragraph()
+    },
+    vitals: {
+      blood_pressure: `${faker.number.int({ min: 90, max: 140 })}/${faker.number.int({ min: 60, max: 90 })}`,
+      heart_rate: faker.number.int({ min: 60, max: 100 }),
+      temperature: faker.number.float({ min: 97, max: 99.5, fractionDigits: 1 }),
+      weight_lbs: faker.number.int({ min: 100, max: 250 }),
+      height_in: faker.number.int({ min: 60, max: 76 })
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
+// IoT/Sensor document
+function generateIoTDocument() {
+  const deviceTypes = ['temperature_sensor', 'humidity_sensor', 'motion_detector', 'pressure_sensor', 'light_sensor', 'air_quality'];
+  const deviceType = faker.helpers.arrayElement(deviceTypes);
+  
+  return {
+    device_id: faker.string.uuid(),
+    device_type: deviceType,
+    device_name: `${deviceType}_${faker.string.alphanumeric(6)}`,
+    location: {
+      facility: faker.company.name(),
+      building: faker.helpers.arrayElement(['A', 'B', 'C', 'D']),
+      floor: faker.number.int({ min: 1, max: 10 }),
+      room: faker.string.alphanumeric(4).toUpperCase(),
+      latitude: faker.location.latitude(),
+      longitude: faker.location.longitude()
+    },
+    readings: {
+      value: faker.number.float({ min: 0, max: 100, fractionDigits: 2 }),
+      unit: faker.helpers.arrayElement(['°C', '°F', '%', 'Pa', 'lux', 'ppm']),
+      quality: faker.helpers.arrayElement(['good', 'fair', 'poor']),
+      battery_level: faker.number.int({ min: 0, max: 100 })
+    },
+    status: faker.helpers.arrayElement(['online', 'offline', 'maintenance', 'error']),
+    firmware_version: `${faker.number.int({ min: 1, max: 5 })}.${faker.number.int({ min: 0, max: 9 })}.${faker.number.int({ min: 0, max: 99 })}`,
+    last_calibration: faker.date.recent({ days: 90 }).toISOString(),
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Social media document
+function generateSocialDocument() {
+  const postType = faker.helpers.arrayElement(['text', 'image', 'video', 'link', 'poll']);
+  
+  return {
+    post_id: faker.string.uuid(),
+    author: {
+      user_id: faker.string.uuid(),
+      username: faker.internet.userName(),
+      display_name: faker.person.fullName(),
+      avatar: faker.image.avatar(),
+      verified: faker.datatype.boolean({ probability: 0.1 }),
+      followers_count: faker.number.int({ min: 0, max: 1000000 })
+    },
+    content: {
+      type: postType,
+      text: faker.lorem.paragraph(),
+      hashtags: Array.from({ length: faker.number.int({ min: 0, max: 5 }) }, () => 
+        faker.lorem.word()
+      ),
+      mentions: Array.from({ length: faker.number.int({ min: 0, max: 3 }) }, () => 
+        faker.internet.userName()
+      ),
+      media_urls: postType !== 'text' ? Array.from({ length: faker.number.int({ min: 1, max: 4 }) }, () => 
+        faker.image.url()
+      ) : [],
+      language: faker.helpers.arrayElement(['en', 'es', 'fr', 'de', 'ja', 'pt'])
+    },
+    engagement: {
+      likes: faker.number.int({ min: 0, max: 10000 }),
+      comments: faker.number.int({ min: 0, max: 500 }),
+      shares: faker.number.int({ min: 0, max: 1000 }),
+      views: faker.number.int({ min: 0, max: 100000 })
+    },
+    location: faker.datatype.boolean({ probability: 0.3 }) ? {
+      city: faker.location.city(),
+      country: faker.location.country()
+    } : null,
+    is_reply: faker.datatype.boolean({ probability: 0.2 }),
+    parent_post_id: null,
+    created_at: faker.date.recent({ days: 7 }).toISOString()
+  };
+}
+
+// Log/Event document
+function generateLogDocument() {
+  const logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'];
+  const services = ['api-gateway', 'auth-service', 'user-service', 'payment-service', 'notification-service', 'search-service'];
+  const level = faker.helpers.arrayElement(logLevels);
+  
+  return {
+    log_id: faker.string.uuid(),
+    timestamp: new Date().toISOString(),
+    level: level,
+    service: faker.helpers.arrayElement(services),
+    instance: `${faker.helpers.arrayElement(services)}-${faker.string.alphanumeric(8)}`,
+    environment: faker.helpers.arrayElement(['development', 'staging', 'production']),
+    version: `${faker.number.int({ min: 1, max: 3 })}.${faker.number.int({ min: 0, max: 99 })}.${faker.number.int({ min: 0, max: 999 })}`,
+    message: level === 'ERROR' || level === 'FATAL' 
+      ? faker.helpers.arrayElement([
+          'Connection timeout exceeded',
+          'Database connection failed',
+          'Authentication token expired',
+          'Rate limit exceeded',
+          'Service unavailable',
+          'Invalid request payload',
+          'Memory limit exceeded'
+        ])
+      : faker.lorem.sentence(),
+    context: {
+      request_id: faker.string.uuid(),
+      user_id: faker.datatype.boolean({ probability: 0.7 }) ? faker.string.uuid() : null,
+      session_id: faker.string.uuid(),
+      ip_address: faker.internet.ip(),
+      user_agent: faker.internet.userAgent()
+    },
+    http: faker.datatype.boolean({ probability: 0.8 }) ? {
+      method: faker.helpers.arrayElement(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
+      path: faker.helpers.arrayElement(['/api/v1/users', '/api/v1/orders', '/api/v1/products', '/api/v1/auth/login']),
+      status_code: level === 'ERROR' ? faker.helpers.arrayElement([400, 401, 403, 404, 500, 502, 503]) : faker.helpers.arrayElement([200, 201, 204]),
+      response_time_ms: faker.number.int({ min: 1, max: level === 'WARN' ? 5000 : 500 })
+    } : null,
+    stack_trace: level === 'ERROR' || level === 'FATAL' 
+      ? `Error: ${faker.lorem.sentence()}\n    at ${faker.lorem.word()}.${faker.lorem.word()}(${faker.system.fileName()}:${faker.number.int({ min: 1, max: 500 })})`
+      : null,
+    tags: Array.from({ length: faker.number.int({ min: 1, max: 4 }) }, () => 
+      faker.helpers.arrayElement(['performance', 'security', 'database', 'network', 'cache', 'queue'])
+    )
+  };
+}
+
+// Generate UUID for document URIs
+function generateUUID() {
+  return faker.string.uuid();
+}
+
+// Parse K6_STAGES environment variable into stages array
+// Format: "1m:100,1m:200,1m:300" -> [{duration:'1m', target:100}, ...]
+function parseStages(stagesStr) {
+  if (!stagesStr) return null;
+  return stagesStr.split(',').map(s => {
+    const [duration, target] = s.trim().split(':');
+    return { duration: duration, target: parseInt(target) };
+  });
+}
+
+// Generate ramping stages automatically: increase VUs every interval
+function generateRampingStages(interval, increment, maxVus, startVus = 0) {
+  const stages = [];
+  for (let vus = startVus + increment; vus <= maxVus; vus += increment) {
+    stages.push({ duration: interval, target: vus });
+  }
+  if (stages.length > 0) {
+    stages.push({ duration: interval, target: maxVus });
+  }
+  return stages;
+}
+
+// Build stages configuration
+function buildStagesConfig() {
+  const explicitStages = parseStages(__ENV.K6_STAGES);
+  if (explicitStages && explicitStages.length > 0) {
+    return { stages: explicitStages };
+  }
+  
+  const rampInterval = __ENV.RAMP_UP_INTERVAL;
+  const vuIncrement = parseInt(__ENV.VU_INCREMENT || '0');
+  const maxVus = parseInt(__ENV.MAX_VUS || '0');
+  
+  if (rampInterval && vuIncrement > 0 && maxVus > 0) {
+    const startVus = parseInt(__ENV.START_VUS || '0');
+    return { stages: generateRampingStages(rampInterval, vuIncrement, maxVus, startVus) };
+  }
+  
+  return {
+    vus: parseInt(__ENV.THREAD_COUNT || '20'),
+    duration: __ENV.DURATION || '5m',
+  };
+}
+
+// Test configuration
+export const options = {
+  ...buildStagesConfig(),
+  
+  thresholds: {
+    http_req_failed: ['rate<0.01'],
+    http_req_duration: ['p(95)<3000'],
+    documents_written: ['count>0'],
+    write_errors: ['rate<0.01'],
+  },
+  
+  insecureSkipTLSVerify: __ENV.INSECURE_SKIP_TLS_VERIFY === 'true',
+};
+
+export default function () {
+  // Configuration from environment variables (mimics properties file)
+  const HOST = __ENV.HOST || 'ml-k6.ml-kube.com';
+  const PORT = __ENV.PORT || '443';
+  const SSL = __ENV.SSL !== 'false'; // Defaults to true (HTTPS), set to 'false' for HTTP
+  const PROTOCOL = SSL ? 'https' : 'http';
+  const DATABASE = __ENV.DATABASE || 'Documents';
+  const USERNAME = __ENV.USERNAME || 'GeoAB';
+  const PASSWORD = __ENV.PASSWORD || 'X0FlWXIbvy';
+  const BASE_PATH = __ENV.BASE_PATH || '/console'; // Load balancer path for app server on port 8000
+  const AUTH_TYPE = __ENV.AUTH_TYPE || 'basic'; // 'basic' or 'digest'
+  const TRANSFORM = __ENV.REST_TRANSFORM || ''; // Optional REST transform
+  const INSECURE_SKIP_TLS_VERIFY = __ENV.INSECURE_SKIP_TLS_VERIFY === 'true'; // Skip TLS verification
+  
+  // Random batch size support - use BATCH_SIZE_MIN/MAX for variable batch sizes
+  // or just BATCH_SIZE for fixed batch size
+  const BATCH_SIZE_MIN = parseInt(__ENV.BATCH_SIZE_MIN || __ENV.BATCH_SIZE || '100');
+  const BATCH_SIZE_MAX = parseInt(__ENV.BATCH_SIZE_MAX || __ENV.BATCH_SIZE || '100');
+  const BATCH_SIZE = faker.number.int({ min: BATCH_SIZE_MIN, max: BATCH_SIZE_MAX });
+  
+  // Build base URL
+  const BASE_URL = `${PROTOCOL}://${HOST}:${PORT}${BASE_PATH}`;
+  
+  // Generate batch of documents using faker (similar to marklogic-data-storm)
+  const batch = [];
+  let totalBatchSize = 0;
+  for (let i = 0; i < BATCH_SIZE; i++) {
+    const doc = generateRandomDocument();
+    const uri = `/data-storm/row/${generateUUID()}.json`;
+    const payload = JSON.stringify(doc);
+    const docSize = payload.length;
+    
+    batch.push({
+      uri: uri,
+      content: doc,
+      payload: payload,
+      size: docSize
+    });
+    
+    // Track document size
+    documentSize.add(docSize);
+    totalBatchSize += docSize;
+  }
+
+  // Configure authentication
+  const params = {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    timeout: '30s',
+    tags: { 
+      operation: 'bulk-write',
+      name: 'MarkLogic_Document_Write' // Group all writes under single metric
+    },
+  };
+
+  // Add TLS skip verification if needed
+  if (INSECURE_SKIP_TLS_VERIFY) {
+    params.insecureSkipTLSVerify = true;
+  }
+
+  if (AUTH_TYPE === 'basic') {
+    const credentials = `${USERNAME}:${PASSWORD}`;
+    const encodedCredentials = encoding.b64encode(credentials);
+    params.headers['Authorization'] = `Basic ${encodedCredentials}`;
+  } else {
+    // Digest authentication - k6 handles the challenge-response automatically
+    params.auth = 'digest';
+    params.username = USERNAME;
+    params.password = PASSWORD;
+  }
+
+  // Record start time
+  const startTime = new Date().getTime();
+  
+  let successCount = 0;
+  let failCount = 0;
+
+  // Write documents individually (MarkLogic REST API doesn't support JSON bulk format)
+  // Use PUT for individual document writes
+  for (let i = 0; i < batch.length; i++) {
+    const item = batch[i];
+    let writeUrl = `${BASE_URL}/v1/documents?uri=${encodeURIComponent(item.uri)}&database=${DATABASE}`;
+    if (TRANSFORM) {
+      writeUrl += `&transform=${TRANSFORM}`;
+    }
+    
+    const writeRes = http.put(writeUrl, item.payload, params);
+    
+    const writeSuccess = writeRes.status === 200 || writeRes.status === 201 || writeRes.status === 204;
+    
+    if (writeSuccess) {
+      successCount++;
+      totalBytesWritten.add(item.size);
+    } else {
+      failCount++;
+      
+      // Classify errors
+      if (writeRes.status === 0) {
+        timeoutErrors.add(1);
+      } else if (writeRes.status >= 400 && writeRes.status < 500) {
+        clientErrors.add(1);
+      } else if (writeRes.status >= 500) {
+        serverErrors.add(1);
+      }
+      
+      if (i === 0) { // Only log first error to avoid spam
+        console.error(`Write failed: ${writeRes.status} - ${writeRes.body}`);
+      }
+    }
+  }
+
+  // Record metrics
+  const duration = new Date().getTime() - startTime;
+  writeDuration.add(duration);
+  batchProcessingTime.add(duration);
+
+  const overallSuccess = successCount > 0;
+  const batchSucceeded = successCount === batch.length;
+  
+  // Calculate throughput
+  const docsPerSecond = (successCount / (duration / 1000));
+  documentsPerSecond.add(docsPerSecond);
+  
+  check(overallSuccess, {
+    'bulk write successful': () => overallSuccess,
+    'write response time acceptable': () => duration < 30000,
+  });
+
+  documentsWritten.add(successCount);
+  writeErrors.add(failCount);
+  successfulBatches.add(batchSucceeded);
+
+  if (failCount > 0) {
+    console.log(`Batch complete: ${successCount} succeeded, ${failCount} failed (batch size: ${BATCH_SIZE})`);
+  }
+
+  // Sleep to simulate think time (adjustable)
+  const thinkTime = parseFloat(__ENV.THINK_TIME || '0.1');
+  sleep(thinkTime);
+}
+
+export function handleSummary(data) {
+  const totalDocuments = data.metrics.documents_written.values.count || 0;
+  const writeErrorRate = data.metrics.write_errors.values.rate || 0;
+  const avgWriteDuration = data.metrics.write_duration.values.avg || 0;
+  const avgDocSize = data.metrics.document_size_bytes?.values?.avg || 0;
+  
+  console.log('\n========================================');
+  console.log('MarkLogic Data Storm Load Test Summary');
+  console.log('(Using @faker-js/faker for data generation)');
+  console.log('========================================');
+  console.log(`Total Documents Written: ${totalDocuments}`);
+  console.log(`Write Error Rate: ${(writeErrorRate * 100).toFixed(2)}%`);
+  console.log(`Average Write Duration: ${avgWriteDuration.toFixed(2)}ms`);
+  console.log(`Average Document Size: ${avgDocSize.toFixed(0)} bytes`);
+  console.log('========================================\n');
+
+  return {
+    'stdout': JSON.stringify(data, null, 2),
+  };
+}

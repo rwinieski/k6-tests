@@ -1,0 +1,307 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marklogic-data-storm-script
+  namespace: ml
+data:
+  marklogic-data-storm.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    import encoding from 'k6/encoding';
+    import { Counter, Rate, Trend } from 'k6/metrics';
+
+    // Custom metrics
+    const documentsWritten = new Counter('documents_written');
+    const writeErrors = new Rate('write_errors');
+    const writeDuration = new Trend('write_duration');
+
+    // Document-level metrics
+    const documentSize = new Trend('document_size_bytes');
+    const totalBytesWritten = new Counter('total_bytes_written');
+
+    // Batch processing metrics
+    const batchProcessingTime = new Trend('batch_processing_time');
+    const successfulBatches = new Rate('batch_success_rate');
+    const documentsPerSecond = new Trend('documents_per_second');
+
+    // Error classification metrics
+    const clientErrors = new Counter('http_4xx_errors');
+    const serverErrors = new Counter('http_5xx_errors');
+    const timeoutErrors = new Counter('timeout_errors');
+
+    // Helper functions for random data generation
+    function randomIntBetween(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function randomString(length) {
+      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      let result = '';
+      for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    }
+
+    function randomEmail() {
+      return `${randomString(8).toLowerCase()}@example.com`;
+    }
+
+    function randomIP() {
+      return `${randomIntBetween(1, 255)}.${randomIntBetween(1, 255)}.${randomIntBetween(1, 255)}.${randomIntBetween(1, 255)}`;
+    }
+
+    function randomPhoneNumber() {
+      return `${randomIntBetween(100, 999)}-${randomIntBetween(100, 999)}-${randomIntBetween(1000, 9999)}`;
+    }
+
+    function randomZipCode() {
+      return `${randomIntBetween(10000, 99999)}`;
+    }
+
+    // Generate random document similar to marklogic-data-storm
+    function generateRandomDocument() {
+      return {
+        first_name: randomString(8),
+        last_name: randomString(10),
+        email: randomEmail(),
+        ip_address: randomIP(),
+        city: randomString(10),
+        state: randomString(2).toUpperCase(),
+        postal_code: randomZipCode(),
+        country: randomString(12),
+        phone_number: randomPhoneNumber(),
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    // Generate UUID for document URIs
+    function generateUUID() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    // Parse K6_STAGES environment variable into stages array
+    // Format: "1m:100,1m:200,1m:300" -> [{duration:'1m', target:100}, ...]
+    function parseStages(stagesStr) {
+      if (!stagesStr) return null;
+      return stagesStr.split(',').map(s => {
+        const [duration, target] = s.trim().split(':');
+        return { duration: duration, target: parseInt(target) };
+      });
+    }
+
+    // Generate ramping stages automatically: increase VUs every interval
+    // RAMP_UP_INTERVAL: time between increases (e.g., "1m")
+    // VU_INCREMENT: VUs to add each interval (e.g., 100)
+    // MAX_VUS: maximum VUs to reach (e.g., 500)
+    function generateRampingStages(interval, increment, maxVus, startVus = 0) {
+      const stages = [];
+      for (let vus = startVus + increment; vus <= maxVus; vus += increment) {
+        stages.push({ duration: interval, target: vus });
+      }
+      // Add a sustain period at max VUs
+      if (stages.length > 0) {
+        stages.push({ duration: interval, target: maxVus });
+      }
+      return stages;
+    }
+
+    // Build stages configuration
+    function buildStagesConfig() {
+      // Priority 1: Explicit K6_STAGES environment variable
+      const explicitStages = parseStages(__ENV.K6_STAGES);
+      if (explicitStages && explicitStages.length > 0) {
+        return { stages: explicitStages };
+      }
+      
+      // Priority 2: Auto-generate ramping stages from interval/increment/max
+      const rampInterval = __ENV.RAMP_UP_INTERVAL;
+      const vuIncrement = parseInt(__ENV.VU_INCREMENT || '0');
+      const maxVus = parseInt(__ENV.MAX_VUS || '0');
+      
+      if (rampInterval && vuIncrement > 0 && maxVus > 0) {
+        const startVus = parseInt(__ENV.START_VUS || '0');
+        return { stages: generateRampingStages(rampInterval, vuIncrement, maxVus, startVus) };
+      }
+      
+      // Priority 3: Fall back to fixed VUs and duration
+      return {
+        vus: parseInt(__ENV.THREAD_COUNT || '20'),
+        duration: __ENV.DURATION || '5m',
+      };
+    }
+
+    // Test configuration - similar to marklogic-data-storm defaults
+    export const options = {
+      // Dynamic configuration: stages (burst mode) or fixed VUs/duration
+      ...buildStagesConfig(),
+      
+      thresholds: {
+        http_req_failed: ['rate<0.01'],     // Less than 1% errors
+        http_req_duration: ['p(95)<3000'],  // 95% under 3s
+        documents_written: ['count>0'],      // At least some documents written
+        write_errors: ['rate<0.01'],         // Less than 1% write errors
+      },
+      
+      // TLS/SSL configuration
+      insecureSkipTLSVerify: __ENV.INSECURE_SKIP_TLS_VERIFY === 'true',
+    };
+
+    export default function () {
+      // Configuration from environment variables (mimics properties file)
+      const HOST = __ENV.HOST || 'ml-k6.ml-kube.com';
+      const PORT = __ENV.PORT || '443';
+      const SSL = __ENV.SSL !== 'false'; // Defaults to true (HTTPS), set to 'false' for HTTP
+      const PROTOCOL = SSL ? 'https' : 'http';
+      const DATABASE = __ENV.DATABASE || 'Documents';
+      const USERNAME = __ENV.USERNAME || 'GeoAB';
+      const PASSWORD = __ENV.PASSWORD || 'X0FlWXIbvy';
+      const BASE_PATH = __ENV.BASE_PATH || ''; // Load balancer path for app server on port 8000
+      const BATCH_SIZE = parseInt(__ENV.BATCH_SIZE || '100');
+      const AUTH_TYPE = __ENV.AUTH_TYPE || 'basic'; // 'basic' or 'digest'
+      const TRANSFORM = __ENV.REST_TRANSFORM || ''; // Optional REST transform
+      const INSECURE_SKIP_TLS_VERIFY = __ENV.INSECURE_SKIP_TLS_VERIFY === 'true'; // Skip TLS verification
+      
+      // Build base URL
+      const BASE_URL = `${PROTOCOL}://${HOST}:${PORT}${BASE_PATH}`;
+      
+      // Generate batch of documents (similar to marklogic-data-storm)
+      const batch = [];
+      let totalBatchSize = 0;
+      for (let i = 0; i < BATCH_SIZE; i++) {
+        const doc = generateRandomDocument();
+        const uri = `/data-storm/row/${generateUUID()}.json`;
+        const payload = JSON.stringify(doc);
+        const docSize = payload.length;
+        
+        batch.push({
+          uri: uri,
+          content: doc,
+          payload: payload,
+          size: docSize
+        });
+        
+        // Track document size
+        documentSize.add(docSize);
+        totalBatchSize += docSize;
+      }
+
+      // Configure authentication
+      const params = {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: '30s',
+        tags: { 
+          operation: 'bulk-write',
+          name: 'MarkLogic_Document_Write' // Group all writes under single metric
+        },
+      };
+
+      // Add TLS skip verification if needed
+      if (INSECURE_SKIP_TLS_VERIFY) {
+        params.insecureSkipTLSVerify = true;
+      }
+
+      if (AUTH_TYPE === 'basic') {
+        const credentials = `${USERNAME}:${PASSWORD}`;
+        const encodedCredentials = encoding.b64encode(credentials);
+        params.headers['Authorization'] = `Basic ${encodedCredentials}`;
+      } else {
+        // Digest authentication - k6 handles the challenge-response automatically
+        params.auth = 'digest';
+        params.username = USERNAME;
+        params.password = PASSWORD;
+      }
+
+      // Record start time
+      const startTime = new Date().getTime();
+      
+      let successCount = 0;
+      let failCount = 0;
+
+      // Write documents individually (MarkLogic REST API doesn't support JSON bulk format)
+      // Use PUT for individual document writes
+      for (let i = 0; i < batch.length; i++) {
+        const item = batch[i];
+        let writeUrl = `${BASE_URL}/v1/documents?uri=${encodeURIComponent(item.uri)}&database=${DATABASE}`;
+        if (TRANSFORM) {
+          writeUrl += `&transform=${TRANSFORM}`;
+        }
+        
+        const writeRes = http.put(writeUrl, item.payload, params);
+        
+        const writeSuccess = writeRes.status === 200 || writeRes.status === 201 || writeRes.status === 204;
+        
+        if (writeSuccess) {
+          successCount++;
+          totalBytesWritten.add(item.size);
+        } else {
+          failCount++;
+          
+          // Classify errors
+          if (writeRes.status === 0) {
+            timeoutErrors.add(1);
+          } else if (writeRes.status >= 400 && writeRes.status < 500) {
+            clientErrors.add(1);
+          } else if (writeRes.status >= 500) {
+            serverErrors.add(1);
+          }
+          
+          if (i === 0) { // Only log first error to avoid spam
+            console.error(`Write failed: ${writeRes.status} - ${writeRes.body}`);
+          }
+        }
+      }
+
+      // Record metrics
+      const duration = new Date().getTime() - startTime;
+      writeDuration.add(duration);
+      batchProcessingTime.add(duration);
+
+      const overallSuccess = successCount > 0;
+      const batchSucceeded = successCount === batch.length;
+      
+      // Calculate throughput
+      const docsPerSecond = (successCount / (duration / 1000));
+      documentsPerSecond.add(docsPerSecond);
+      
+      check(overallSuccess, {
+        'bulk write successful': () => overallSuccess,
+        'write response time acceptable': () => duration < 30000,
+      });
+
+      documentsWritten.add(successCount);
+      writeErrors.add(failCount);
+      successfulBatches.add(batchSucceeded);
+
+      if (failCount > 0) {
+        console.log(`Batch complete: ${successCount} succeeded, ${failCount} failed`);
+      }
+
+      // Sleep to simulate think time (adjustable)
+      const thinkTime = parseFloat(__ENV.THINK_TIME || '0.1');
+      sleep(thinkTime);
+    }
+
+    export function handleSummary(data) {
+      const totalDocuments = data.metrics.documents_written.values.count || 0;
+      const writeErrorRate = data.metrics.write_errors.values.rate || 0;
+      const avgWriteDuration = data.metrics.write_duration.values.avg || 0;
+      
+      console.log('\n========================================');
+      console.log('MarkLogic Data Storm Load Test Summary');
+      console.log('========================================');
+      console.log(`Total Documents Written: ${totalDocuments}`);
+      console.log(`Write Error Rate: ${(writeErrorRate * 100).toFixed(2)}%`);
+      console.log(`Average Write Duration: ${avgWriteDuration.toFixed(2)}ms`);
+      console.log('========================================\n');
+
+      return {
+        'stdout': JSON.stringify(data, null, 2),
+      };
+    }

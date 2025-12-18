@@ -1,0 +1,6 @@
+k6 run -e MARKLOGIC_ENDPOINT=https://ml-k6.ml-kube.com:443 \
+       -e BASE_PATH=/console/qconsole/ |
+       -e INSECURE_SKIP_TLS_VERIFY=true \
+       -e MARKLOGIC_USER=GeoAB \
+       -e MARKLOGIC_PASSWORD=X0FlWXIbvy \
+       marklogic-load-test.js

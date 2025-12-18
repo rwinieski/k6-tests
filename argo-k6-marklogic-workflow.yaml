@@ -1,0 +1,235 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: marklogic-k6-test-
+  namespace: ml
+spec:
+  entrypoint: marklogic-health-test-pipeline
+  serviceAccountName: argo-workflow
+  
+  arguments:
+    parameters:
+    - name: marklogic-endpoint
+      value: "http://ml12-cluster.ml.svc.cluster.local"
+    - name: insecure-skip-tls-verify
+      value: "false"
+    - name: base-path
+      value: ""
+    - name: app-services-port
+      value: "8000"
+    - name: admin-port
+      value: "8001"
+    - name: manage-port
+      value: "8002"
+  
+  templates:
+  - name: marklogic-health-test-pipeline
+    steps:
+    - - name: deploy-test-config
+        template: deploy-k6-config
+    
+    - - name: run-k6-test
+        template: execute-k6-testrun
+    
+    - - name: wait-for-completion
+        template: wait-test-completion
+    
+    - - name: get-test-results
+        template: fetch-results
+    
+    - - name: cleanup
+        template: cleanup-resources
+
+  # Step 1: Deploy ConfigMap with k6 script
+  - name: deploy-k6-config
+    resource:
+      action: apply
+      manifest: |
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: marklogic-health-check-script
+          namespace: ml
+        data:
+          marklogic-health-check.js: |
+            import http from 'k6/http';
+            import { check, sleep } from 'k6';
+
+            export const options = {
+              vus: 1,
+              duration: '30s',
+              thresholds: {
+                http_req_failed: ['rate<0.1'],
+                http_req_duration: ['p(95)<2000'],
+              },
+              insecureSkipTLSVerify: __ENV.INSECURE_SKIP_TLS_VERIFY === 'true',
+            };
+
+            export default function () {
+              const MARKLOGIC_HOST = __ENV.MARKLOGIC_HOST || 'http://ml12-cluster.ml.svc.cluster.local';
+              const APP_SERVICES_PORT = __ENV.APP_SERVICES_PORT || '8000';
+              const ADMIN_PORT = __ENV.ADMIN_PORT || '8001';
+              const MANAGE_PORT = __ENV.MANAGE_PORT || '8002';
+              const BASE_PATH = __ENV.BASE_PATH || '';
+              
+              const appServicesUrl = `${MARKLOGIC_HOST}:${APP_SERVICES_PORT}${BASE_PATH}`;
+              const appServicesRes = http.get(appServicesUrl, { timeout: '10s' });
+              
+              check(appServicesRes, {
+                'MarkLogic App Services is reachable': (r) => r.status === 200 || r.status === 401 || r.status === 302,
+                'MarkLogic App Services response time < 2s': (r) => r.timings.duration < 2000,
+              });
+
+              const adminUrl = `${MARKLOGIC_HOST}:${ADMIN_PORT}${BASE_PATH}`;
+              const adminRes = http.get(adminUrl, { timeout: '10s' });
+              
+              check(adminRes, {
+                'MarkLogic Admin UI is reachable': (r) => r.status === 200 || r.status === 401 || r.status === 302,
+                'MarkLogic Admin UI response time < 2s': (r) => r.timings.duration < 2000,
+              });
+
+              const manageUrl = `${MARKLOGIC_HOST}:${MANAGE_PORT}${BASE_PATH}`;
+              const manageRes = http.get(manageUrl, { timeout: '10s' });
+              
+              check(manageRes, {
+                'MarkLogic Manage API is reachable': (r) => r.status === 200 || r.status === 401 || r.status === 302,
+                'MarkLogic Manage API response time < 2s': (r) => r.timings.duration < 2000,
+              });
+
+              console.log(`App Services: ${appServicesRes.status}, Admin UI: ${adminRes.status}, Manage API: ${manageRes.status}`);
+              sleep(1);
+            }
+
+  # Step 2: Create k6 TestRun
+  - name: execute-k6-testrun
+    resource:
+      action: apply
+      manifest: |
+        apiVersion: k6.io/v1alpha1
+        kind: TestRun
+        metadata:
+          name: marklogic-health-check-{{workflow.uid}}
+          namespace: ml
+        spec:
+          parallelism: 1
+          script:
+            configMap:
+              name: marklogic-health-check-script
+              file: marklogic-health-check.js
+          runner:
+            image: grafana/k6:latest
+            env:
+            - name: MARKLOGIC_HOST
+              value: "{{workflow.parameters.marklogic-endpoint}}"
+            - name: INSECURE_SKIP_TLS_VERIFY
+              value: "{{workflow.parameters.insecure-skip-tls-verify}}"
+            - name: BASE_PATH
+              value: "{{workflow.parameters.base-path}}"
+            - name: APP_SERVICES_PORT
+              value: "{{workflow.parameters.app-services-port}}"
+            - name: ADMIN_PORT
+              value: "{{workflow.parameters.admin-port}}"
+            - name: MANAGE_PORT
+              value: "{{workflow.parameters.manage-port}}"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+          separate: false
+
+  # Step 3: Wait for TestRun completion
+  - name: wait-test-completion
+    script:
+      image: bitnami/kubectl:latest
+      command: [bash]
+      source: |
+        #!/bin/bash
+        set -e
+        
+        TESTRUN_NAME="marklogic-health-check-{{workflow.uid}}"
+        NAMESPACE="ml"
+        TIMEOUT=300
+        ELAPSED=0
+        
+        echo "Waiting for TestRun ${TESTRUN_NAME} to complete..."
+        
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+          STATUS=$(kubectl get testrun ${TESTRUN_NAME} -n ${NAMESPACE} -o jsonpath='{.status.stage}' 2>/dev/null || echo "not-found")
+          
+          echo "Current status: ${STATUS}"
+          
+          if [ "$STATUS" == "finished" ] || [ "$STATUS" == "error" ]; then
+            echo "TestRun completed with status: ${STATUS}"
+            
+            if [ "$STATUS" == "error" ]; then
+              echo "TestRun failed!"
+              exit 1
+            fi
+            
+            exit 0
+          fi
+          
+          sleep 5
+          ELAPSED=$((ELAPSED + 5))
+        done
+        
+        echo "Timeout waiting for TestRun to complete"
+        exit 1
+
+  # Step 4: Fetch test results
+  - name: fetch-results
+    script:
+      image: bitnami/kubectl:latest
+      command: [bash]
+      source: |
+        #!/bin/bash
+        set -e
+        
+        TESTRUN_NAME="marklogic-health-check-{{workflow.uid}}"
+        NAMESPACE="ml"
+        
+        echo "========================================="
+        echo "K6 Test Results for MarkLogic Health Check"
+        echo "========================================="
+        
+        # Get TestRun status
+        echo ""
+        echo "TestRun Status:"
+        kubectl get testrun ${TESTRUN_NAME} -n ${NAMESPACE} -o yaml
+        
+        echo ""
+        echo "========================================="
+        echo "Test Logs:"
+        echo "========================================="
+        
+        # Get logs from k6 pods
+        kubectl logs -n ${NAMESPACE} -l k6_cr=${TESTRUN_NAME} --tail=100 || echo "No logs found"
+        
+        echo ""
+        echo "========================================="
+        echo "Test Summary Complete"
+        echo "========================================="
+
+  # Step 5: Cleanup resources
+  - name: cleanup-resources
+    script:
+      image: bitnami/kubectl:latest
+      command: [bash]
+      source: |
+        #!/bin/bash
+        
+        TESTRUN_NAME="marklogic-health-check-{{workflow.uid}}"
+        NAMESPACE="ml"
+        
+        echo "Cleaning up test resources..."
+        
+        # Delete TestRun (this will also delete associated pods)
+        kubectl delete testrun ${TESTRUN_NAME} -n ${NAMESPACE} --ignore-not-found=true
+        
+        # Keep ConfigMap for reuse
+        # kubectl delete configmap marklogic-health-check-script -n ${NAMESPACE} --ignore-not-found=true
+        
+        echo "Cleanup complete"

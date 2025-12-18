@@ -1,0 +1,113 @@
+apiVersion: marklogic.progress.com/v1
+kind: MarklogicCluster
+metadata:
+  name: ml-k6
+  annotations: {}
+spec:
+  image: "progressofficial/marklogic-db:11.3.3-ubi-rootless-2.2.2"
+  ## It is recommended to use Kubernetes secrets to store the admin credentials
+  ## To create a secret, run the following command in the same namespace as the CR:
+  ## kubectl create secret generic admincreds --from-literal=username=admin --from-literal=password=admin
+  ## If you do not provide the admin credentials, the operator will generate a secret for you containing admin credentials
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: "gp3"
+  podSecurityContext:
+    fsGroup: 2 # MarkLogic runs as user 1000 and group 2 (users) **!!Must not be changed!!**
+    fsGroupChangePolicy: OnRootMismatch
+  securityContext:
+    runAsUser: 1000 # MarkLogic runs as user 1000 and group 2 (users) **!!Must not be changed!!**
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - "ALL"
+  auth:
+    secretName: ml1
+
+# Configuration for the HAProxy load balancer
+## An out of box load balancer configured to handle cookie based session affinity that's required by most MarkLogic applications.
+  haproxy:
+    enabled: true
+    pathBasedRouting: true
+    frontendPort: 443
+    tcpPorts:
+      enabled: false
+      ports:
+        - name: odbc
+          type: TCP
+          port: 5432
+    appServers:
+      - name: "app-service"
+        port: 8000
+        path: "/console"
+      - name: "admin"
+        port: 8001
+        path: "/adminUI"
+      - name: "manage"
+        port: 8002
+        path: "/manage"
+    stats:
+      enabled: true
+      port: 1024
+  ## Configure Ingress
+  ## ref: https://kubernetes.io/docs/concepts/services-networking/ingress/
+    ingress: 
+      enabled: true
+      ingressClassName: "alb"
+
+      ## Ingress labels
+      ## ref: https://kubernetes.io/docs/concepts/overvsiew/working-with-objects/labels/
+      labels: {}
+      ## Ingress annotations
+      ## Update the annotations as per your requirements
+      ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+      annotations: 
+        alb.ingress.kubernetes.io/healthcheck-port: '8001'
+        alb.ingress.kubernetes.io/healthcheck-path: '/adminUI'
+        alb.ingress.kubernetes.io/success-codes: '200-401'
+        alb.ingress.kubernetes.io/load-balancer-name: ml-k6
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/target-group-attributes: load_balancing.algorithm.type=least_outstanding_requests
+        alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-west-2:308453789681:certificate/4c722368-cdac-4165-9934-522343edde12"
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/group.name: ml-k6
+        alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600,routing.http.xff_header_processing.mode=append
+
+      # Ingress hosts
+      # add default hosts and additional hosts
+      # ref: https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-rules
+      host: "ml-k6.ml-kube.com"
+      additionalHosts: []
+    
+      ## Ingress TLS
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+      tls: []
+        # secretName: your-certificate-name
+        # hosts:
+        #   - marklogic.example.com
+  markLogicGroups:
+  - name: dnode
+    replicas: 3
+    groupConfig:
+      name: dnode
+    isBootstrap: true
+    haproxy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Gi
+      storageClassName: "gp3"
+  - replicas: 2
+    name: enode
+    groupConfig:
+      name: enode
+    haproxy:
+      enabled: true
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClassName: "gp3"
