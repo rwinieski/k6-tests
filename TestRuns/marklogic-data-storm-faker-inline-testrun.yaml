@@ -71,7 +71,7 @@ spec:
       
       # Batch Processing Settings
       - name: BATCH_SIZE
-        value: "1000"
+        value: "2000"
       - name: SLEEP_DURATION
         value: "0.1"
       
