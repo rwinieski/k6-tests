@@ -4,15 +4,15 @@ metadata:
   name: ml-k6
   annotations: {}
 spec:
-  image: "progressofficial/marklogic-db:11.3.3-ubi-rootless-2.2.2"
+  image: "progressofficial/marklogic-db:12.0.1-ubi9-rootless-2.2.3"
   ## It is recommended to use Kubernetes secrets to store the admin credentials
   ## To create a secret, run the following command in the same namespace as the CR:
   ## kubectl create secret generic admincreds --from-literal=username=admin --from-literal=password=admin
   ## If you do not provide the admin credentials, the operator will generate a secret for you containing admin credentials
   persistence:
     enabled: true
-    size: 10Gi
-    storageClassName: "gp3"
+    size: 50Gi
+    storageClassName: "gp3-speed"
   podSecurityContext:
     fsGroup: 2 # MarkLogic runs as user 1000 and group 2 (users) **!!Must not be changed!!**
     fsGroupChangePolicy: OnRootMismatch
@@ -27,9 +27,13 @@ spec:
   auth:
     secretName: ml1
 
+
+
 # Configuration for the HAProxy load balancer
 ## An out of box load balancer configured to handle cookie based session affinity that's required by most MarkLogic applications.
   haproxy:
+    nodeSelector: 
+      role: rwinieski-node
     enabled: true
     pathBasedRouting: true
     frontendPort: 443
@@ -89,25 +93,18 @@ spec:
         # secretName: your-certificate-name
         # hosts:
         #   - marklogic.example.com
+    
   markLogicGroups:
   - name: dnode
-    replicas: 3
+    nodeSelector: 
+      role: ml-k6
+    replicas: 5
     groupConfig:
       name: dnode
     isBootstrap: true
     haproxy:
-      enabled: false
-    persistence:
-      enabled: true
-      size: 100Gi
-      storageClassName: "gp3"
-  - replicas: 2
-    name: enode
-    groupConfig:
-      name: enode
-    haproxy:
       enabled: true
     persistence:
       enabled: true
-      size: 20Gi
-      storageClassName: "gp3"
+      size: 500Gi
+      storageClassName: "gp3-speed"

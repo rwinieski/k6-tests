@@ -1,0 +1,13 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-speed
+parameters:
+  csi.storage.k8s.io/fstype: xfs
+  encrypted: "false"
+  iops: "16000"
+  throughput: "400"
+  type: gp3
+provisioner: kubernetes.io/aws-ebs
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer

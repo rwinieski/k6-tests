@@ -1,11 +1,11 @@
 apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
-  name: marklogic-data-storm-faker-inline
+  name: marklogic-data-storm-faker-inline-tousends
   namespace: ml
   labels:
     app: k6-load-test
-    test-type: marklogic-faker-inline-test
+    test-type: marklogic-faker-inline-tousends
 spec:
   parallelism: 10
   
@@ -31,22 +31,32 @@ spec:
       - name: K6_PROMETHEUS_RW_PUSH_INTERVAL
         value: "5s"
       - name: K6_TAG_TESTID
-        value: "marklogic-data-storm-faker-inline-test"
+        value: "marklogic-data-storm-faker-inline-tousends"
       # MarkLogic Connection Settings
       - name: ML_HOST
-        value: "dnode-0.dnode.ml.svc.cluster.local"
+        value: "marklogic-haproxy.ml.svc.cluster.local"
       - name: ML_PORT
-        value: "8000"
+        value: "443"
       - name: ML_USER
-        value: "ml-admin"
+        valueFrom:
+          secretKeyRef:
+            name: ml1
+            key: username
       - name: ML_PASSWORD
-        value: "ml-admin-2023"
+        valueFrom:
+          secretKeyRef:
+            name: ml1
+            key: password
       - name: ML_DATABASE
         value: "Documents"
       - name: ML_AUTH_TYPE
         value: "basic"
       - name: ML_PROTOCOL
         value: "http"
+      # Base path for load balancer routing (e.g., '/marklogic' if LB routes /marklogic/* to MarkLogic)
+      # Leave empty or remove if MarkLogic is accessed directly without a path prefix
+      - name: ML_BASE_PATH
+        value: "/console"
       - name: ML_URI_PREFIX
         value: "/k6-faker-inline-test/"
       - name: ML_COLLECTIONS
@@ -55,13 +65,13 @@ spec:
       # Document Generation Settings
       # Supported types: standard, minimal, extended, financial, ecommerce, healthcare, iot, social, log
       - name: DOC_TYPE
-        value: "standard,financial,ecommerce,healthcare"
+        value: "extended,person,financial,food,airline,book,ecommerce,healthcare,location,iot,social,log"
       - name: INCLUDE_DOC_METADATA
         value: "true"
       
       # Batch Processing Settings
       - name: BATCH_SIZE
-        value: "1"
+        value: "1000"
       - name: SLEEP_DURATION
         value: "0.1"
       
@@ -98,3 +108,10 @@ spec:
       limits:
         cpu: "2000m"
         memory: "2Gi"
+    
+    # Node selector - schedule k6 runners on specific nodes
+    nodeSelector:
+      role: rwinieski-node
+      # Add your custom node labels here, e.g.:
+      # node-role.kubernetes.io/worker: "true"
+      # workload-type: load-test

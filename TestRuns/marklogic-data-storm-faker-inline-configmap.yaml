@@ -619,7 +619,11 @@ data:
     const BATCH_SIZE = parseInt(__ENV.BATCH_SIZE || '1', 10);
     const SLEEP_DURATION = parseFloat(__ENV.SLEEP_DURATION || '0.1');
 
-    const baseUrl = `${ML_PROTOCOL}://${ML_HOST}:${ML_PORT}`;
+    // Base path for load balancer routing (e.g., '/marklogic' if LB routes /marklogic/* to MarkLogic)
+    // Leave empty if MarkLogic is accessed directly without a path prefix
+    const ML_BASE_PATH = (__ENV.ML_BASE_PATH || '').replace(/\/+$/, ''); // Remove trailing slashes
+
+    const baseUrl = `${ML_PROTOCOL}://${ML_HOST}:${ML_PORT}${ML_BASE_PATH}`;
 
     // =============================================================================
     // MAIN TEST FUNCTION
@@ -720,6 +724,7 @@ data:
       console.log(`Target: ${baseUrl}`);
       console.log(`Database: ${ML_DATABASE}`);
       console.log(`Auth Type: ${ML_AUTH_TYPE}`);
+      console.log(`Base Path: ${ML_BASE_PATH || '(none)'}`);
       console.log(`Document Types: ${__ENV.DOC_TYPE || 'standard'}`);
       console.log(`Batch Size: ${BATCH_SIZE}`);
       console.log(`URI Prefix: ${ML_URI_PREFIX}`);
