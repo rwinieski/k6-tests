@@ -1,13 +1,13 @@
 apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
-  name: marklogic-data-storm-faker-inline-thirty
+  name: marklogic-data-storm-10h-interval-ri6i4xlarge
   namespace: ml
   labels:
     app: k6-load-test
-    test-type: marklogic-faker-inline-thirty
+    test-type: marklogic-10h-interval-ri6i4xlarge
 spec:
-  parallelism: 10
+  parallelism: 1  # Single k6 instance, VUs are managed internally
   
   # Reference to the ConfigMap containing the k6 script
   script:
@@ -31,7 +31,7 @@ spec:
       - name: K6_PROMETHEUS_RW_PUSH_INTERVAL
         value: "5s"
       - name: K6_TAG_TESTID
-        value: "marklogic-data-storm-faker-inline-thirty"
+        value: "marklogic-10h-interval-ri6i4xlarge"
       # MarkLogic Connection Settings
       - name: ML_HOST
         value: "marklogic-haproxy.ml.svc.cluster.local"
@@ -58,9 +58,9 @@ spec:
       - name: ML_BASE_PATH
         value: "/console"
       - name: ML_URI_PREFIX
-        value: "/k6-faker-inline-test/"
+        value: "/k6-faker-inline-test-ri6i4xlarge/"
       - name: ML_COLLECTIONS
-        value: "k6-faker-inline-test,load-test"
+        value: "k6-faker-inline-test,load-test,ri6i4xlarge"
       
       # Document Generation Settings
       # Supported types: standard, minimal, extended, financial, ecommerce, healthcare, iot, social, log
@@ -70,29 +70,26 @@ spec:
         value: "true"
       
       # Batch Processing Settings
+      # BATCH_SIZE = number of requests per VU iteration
+      # DOCS_PER_REQUEST = number of documents per bulk POST request
+      # Total docs per iteration = BATCH_SIZE × DOCS_PER_REQUEST = 2000 × 200 = 400,000 docs
       - name: BATCH_SIZE
         value: "2000"
+      - name: DOCS_PER_REQUEST
+        value: "200"
       - name: SLEEP_DURATION
-        value: "0.01"
+        value: "0"
       
-      # Staging Configuration - Ramping burst every 1 minute
+      # Staging Configuration
+      # Pattern: 30min work at 32 VUs, then 10min rest (0 VUs)
+      # Repeated for 10 hours (15 cycles × 40min = 600min = 10h)
       # Format: "duration:target_vus,duration:target_vus,..."
       - name: K6_STAGES
-        value: "2m:500,32m:500"
-      
-      # Alternative ramping configuration (uncomment to use instead of K6_STAGES)
-      # - name: RAMP_UP_INTERVAL
-      #   value: "2m"
-      # - name: VU_INCREMENT
-      #   value: "100"
-      # - name: MAX_VUS
-      #   value: "500"
-      # - name: HOLD_DURATION
-      #   value: "10m"
+        value: "30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0,30m:32,10m:0"
       
       # Test metadata
       - name: TEST_NAME
-        value: "marklogic-faker-inline-burst"
+        value: "marklogic-10h-interval-ri6i4xlarge"
       - name: ENVIRONMENT
         value: "development"
       
@@ -106,12 +103,9 @@ spec:
         cpu: "500m"
         memory: "512Mi"
       limits:
-        cpu: "2000m"
-        memory: "2Gi"
+        cpu: "15000m"
+        memory: "128Gi"
     
     # Node selector - schedule k6 runners on specific nodes
     nodeSelector:
-      role: rwinieski-node
-      # Add your custom node labels here, e.g.:
-      # node-role.kubernetes.io/worker: "true"
-      # workload-type: load-test
+      role: ml-testrun

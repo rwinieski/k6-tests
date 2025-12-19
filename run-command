@@ -4,3 +4,6 @@ k6 run -e MARKLOGIC_ENDPOINT=https://ml-k6.ml-kube.com:443 \
        -e MARKLOGIC_USER=GeoAB \
        -e MARKLOGIC_PASSWORD=X0FlWXIbvy \
        marklogic-load-test.js
+
+
+eksctl create nodegroup --cluster=rwiniesk --name=ml-testrun --nodes=3 --node-volume-size=200 --node-volume-type=gp3 --instance-types=r6i.4xlarge --asg-access  --external-dns-access --alb-ingress-access --tags role=ml-testrun

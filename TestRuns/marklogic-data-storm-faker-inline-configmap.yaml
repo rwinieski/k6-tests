@@ -617,7 +617,13 @@ data:
     const ML_URI_PREFIX = __ENV.ML_URI_PREFIX || '/k6-test/';
     const ML_COLLECTIONS = __ENV.ML_COLLECTIONS || 'k6-load-test';
     const BATCH_SIZE = parseInt(__ENV.BATCH_SIZE || '1', 10);
+    const DOCS_PER_REQUEST = parseInt(__ENV.DOCS_PER_REQUEST || '1', 10); // Documents per bulk POST request
     const SLEEP_DURATION = parseFloat(__ENV.SLEEP_DURATION || '0.1');
+
+    // Interval scheduling: run batches every INTERVAL_MINUTES for TOTAL_HOURS
+    // Set INTERVAL_MINUTES > 0 to enable interval mode
+    const INTERVAL_MINUTES = parseInt(__ENV.INTERVAL_MINUTES || '0', 10);
+    const TOTAL_HOURS = parseFloat(__ENV.TOTAL_HOURS || '1');
 
     // Base path for load balancer routing (e.g., '/marklogic' if LB routes /marklogic/* to MarkLogic)
     // Leave empty if MarkLogic is accessed directly without a path prefix
@@ -629,62 +635,116 @@ data:
     // MAIN TEST FUNCTION
     // =============================================================================
 
+    /**
+     * Build multipart body for MarkLogic bulk API
+     * Each document is a separate part with metadata headers
+     * Collection is specified per-document in Content-Disposition
+     */
+    function buildBulkRequestBody(documents, boundary, collections) {
+      let body = '';
+      let totalSize = 0;
+      
+      for (const doc of documents) {
+        body += `--${boundary}\r\n`;
+        body += `Content-Type: application/json\r\n`;
+        body += `Content-Disposition: attachment; filename="${doc.uri}"; category=content; format=json\r\n`;
+        // Add collections as X-Content-Collection headers (one per collection)
+        if (collections) {
+          const collArray = collections.split(',').map(c => c.trim());
+          for (const coll of collArray) {
+            body += `X-Content-Collection: ${coll}\r\n`;
+          }
+        }
+        body += `\r\n`;
+        body += doc.content;
+        body += `\r\n`;
+        totalSize += doc.content.length;
+      }
+      
+      body += `--${boundary}--\r\n`;
+      
+      return { body, totalSize };
+    }
+
+    /**
+     * Write documents using POST with multipart/mixed (bulk API)
+     * Always uses POST since /v1/documents PUT only accepts 1 document
+     */
+    function writeDocuments(documents) {
+      const requestTags = { name: 'MarkLogic_DocumentWrite' };
+      const boundary = `k6boundary${faker.string.alphanumeric(16)}`;
+      const { body, totalSize } = buildBulkRequestBody(documents, boundary, ML_COLLECTIONS);
+      
+      // POST to /v1/documents with multipart/mixed (collections are in part headers)
+      const url = `${baseUrl}/v1/documents?database=${encodeURIComponent(ML_DATABASE)}`;
+      
+      let response;
+      if (ML_AUTH_TYPE === 'digest') {
+        response = http.post(url, body, {
+          headers: { 'Content-Type': `multipart/mixed; boundary=${boundary}` },
+          auth: 'digest',
+          timeout: '60s',
+          tags: requestTags
+        });
+      } else {
+        response = http.post(url, body, {
+          headers: {
+            'Content-Type': `multipart/mixed; boundary=${boundary}`,
+            'Authorization': `Basic ${encoding.b64encode(`${ML_USER}:${ML_PASSWORD}`)}`
+          },
+          timeout: '60s',
+          tags: requestTags
+        });
+      }
+      
+      return { response, totalSize, docCount: documents.length };
+    }
+
     export default function () {
       const batchStartTime = Date.now();
       let batchSuccess = true;
       let documentsInBatch = 0;
+      let totalBytesInBatch = 0;
       
+      // BATCH_SIZE = number of bulk requests per iteration
+      // DOCS_PER_REQUEST = number of documents per bulk request
       for (let i = 0; i < BATCH_SIZE; i++) {
-        const doc = generateRandomDocument();
-        const docString = JSON.stringify(doc);
-        const docSize = docString.length;
-        
+        // Prepare documents for this bulk request
+        const documents = [];
         const timestamp = Date.now();
-        const randomId = faker.string.uuid();
-        const uri = `${ML_URI_PREFIX}${timestamp}-${randomId}.json`;
         
-        const url = `${baseUrl}/v1/documents?uri=${encodeURIComponent(uri)}&database=${encodeURIComponent(ML_DATABASE)}&collection=${encodeURIComponent(ML_COLLECTIONS)}`;
-        
-        const startTime = Date.now();
-        
-        // Use URL grouping with 'name' tag to prevent high cardinality metrics
-        // This groups all document writes under a single metric name instead of unique URLs
-        const requestTags = { name: 'MarkLogic_DocumentWrite' };
-        
-        let response;
-        if (ML_AUTH_TYPE === 'digest') {
-          response = http.put(url, docString, {
-            headers: { 'Content-Type': 'application/json' },
-            auth: 'digest',
-            timeout: '30s',
-            tags: requestTags
+        for (let j = 0; j < DOCS_PER_REQUEST; j++) {
+          const doc = generateRandomDocument();
+          const docString = JSON.stringify(doc);
+          const randomId = faker.string.uuid();
+          const uri = `${ML_URI_PREFIX}${timestamp}-${randomId}.json`;
+          
+          documents.push({
+            uri: uri,
+            content: docString
           });
-        } else {
-          response = http.put(url, docString, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Basic ${encoding.b64encode(`${ML_USER}:${ML_PASSWORD}`)}`
-            },
-            timeout: '30s',
-            tags: requestTags
-          });
+          
+          documentSize.add(docString.length);
         }
         
+        const startTime = Date.now();
+        const { response, totalSize, docCount } = writeDocuments(documents);
         const duration = Date.now() - startTime;
         
         writeDuration.add(duration);
-        documentSize.add(docSize);
         
+        // Check response - bulk API returns 200 on success
         const success = check(response, {
-          'document written successfully': (r) => r.status === 201 || r.status === 204,
-          'response time < 2s': (r) => r.timings.duration < 2000
+          'documents written successfully': (r) => r.status === 200 || r.status === 201 || r.status === 204,
+          'response time < 5s': (r) => r.timings.duration < 5000
         });
         
         if (success) {
-          documentsWritten.add(1);
-          totalBytesWritten.add(docSize);
+          documentsWritten.add(docCount);
+          totalBytesWritten.add(totalSize);
           writeErrors.add(0);
-          documentsInBatch++;
+          documentsInBatch += docCount;
+          totalBytesInBatch += totalSize;
         } else {
           writeErrors.add(1);
           batchSuccess = false;
@@ -693,12 +753,12 @@ data:
             clientErrors.add(1);
           } else if (response.status >= 500) {
             serverErrors.add(1);
-          } else if (response.timings.duration >= 30000) {
+          } else if (response.timings.duration >= 60000) {
             timeoutErrors.add(1);
           }
           
           if (__ENV.DEBUG === 'true') {
-            console.error(`Write failed: status=${response.status}, uri=${uri}, body=${response.body}`);
+            console.error(`Bulk write failed: status=${response.status}, docs=${docCount}, body=${response.body}`);
           }
         }
       }
@@ -712,7 +772,17 @@ data:
         documentsPerSecond.add(docsPerSec);
       }
       
-      sleep(SLEEP_DURATION);
+      // Interval mode: sleep until next interval
+      if (INTERVAL_MINUTES > 0) {
+        const intervalMs = INTERVAL_MINUTES * 60 * 1000;
+        const elapsedMs = Date.now() - batchStartTime;
+        const sleepMs = Math.max(0, intervalMs - elapsedMs);
+        if (sleepMs > 0) {
+          sleep(sleepMs / 1000);
+        }
+      } else {
+        sleep(SLEEP_DURATION);
+      }
     }
 
     // =============================================================================
@@ -726,7 +796,15 @@ data:
       console.log(`Auth Type: ${ML_AUTH_TYPE}`);
       console.log(`Base Path: ${ML_BASE_PATH || '(none)'}`);
       console.log(`Document Types: ${__ENV.DOC_TYPE || 'standard'}`);
-      console.log(`Batch Size: ${BATCH_SIZE}`);
+      console.log(`Batch Size (requests per iteration): ${BATCH_SIZE}`);
+      console.log(`Docs Per Request: ${DOCS_PER_REQUEST}`);
+      console.log(`Total Docs Per Iteration: ${BATCH_SIZE * DOCS_PER_REQUEST}`);
+      if (INTERVAL_MINUTES > 0) {
+        console.log(`--- Interval Mode ---`);
+        console.log(`Interval: Every ${INTERVAL_MINUTES} minutes`);
+        console.log(`Total Duration: ${TOTAL_HOURS} hours`);
+        console.log(`Expected Runs: ${Math.floor((TOTAL_HOURS * 60) / INTERVAL_MINUTES)}`);
+      }
       console.log(`URI Prefix: ${ML_URI_PREFIX}`);
       console.log(`Collections: ${ML_COLLECTIONS}`);
       console.log('Stages:', JSON.stringify(options.stages, null, 2));
