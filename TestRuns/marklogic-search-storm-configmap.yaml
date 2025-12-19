@@ -1,0 +1,904 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marklogic-search-storm-script
+  namespace: ml
+  labels:
+    app: k6-load-test
+    test-type: marklogic-search
+data:
+  marklogic-search-storm.js: |
+    import http from 'k6/http';
+    import { check, sleep, group } from 'k6';
+    import encoding from 'k6/encoding';
+    import { Counter, Rate, Trend, Gauge } from 'k6/metrics';
+    import exec from 'k6/execution';
+
+    // =============================================================================
+    // INLINE FAKER UTILITIES - For generating search terms matching loaded data
+    // =============================================================================
+
+    const firstNames = ['James', 'Mary', 'John', 'Patricia', 'Robert', 'Jennifer', 'Michael', 'Linda', 'William', 'Elizabeth', 'David', 'Barbara', 'Richard', 'Susan', 'Joseph', 'Jessica', 'Thomas', 'Sarah', 'Charles', 'Karen', 'Christopher', 'Nancy', 'Daniel', 'Lisa', 'Matthew', 'Betty', 'Anthony', 'Margaret', 'Mark', 'Sandra', 'Donald', 'Ashley', 'Steven', 'Kimberly', 'Paul', 'Emily', 'Andrew', 'Donna', 'Joshua', 'Michelle'];
+    const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee', 'Perez', 'Thompson', 'White', 'Harris', 'Sanchez', 'Clark', 'Ramirez', 'Lewis', 'Robinson', 'Walker', 'Young', 'Allen', 'King', 'Wright', 'Scott', 'Torres', 'Nguyen', 'Hill', 'Flores'];
+    const cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'Philadelphia', 'San Antonio', 'San Diego', 'Dallas', 'San Jose', 'Austin', 'Jacksonville', 'Fort Worth', 'Columbus', 'Charlotte', 'Seattle', 'Denver', 'Boston', 'Nashville', 'Detroit', 'Portland', 'Memphis', 'Las Vegas', 'Atlanta', 'Miami', 'Oakland', 'Minneapolis', 'Cleveland', 'Raleigh', 'Tampa'];
+    const states = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'];
+    const countries = ['United States', 'Canada', 'United Kingdom', 'Australia', 'Germany', 'France', 'Japan', 'Brazil', 'India', 'Mexico', 'Spain', 'Italy', 'Netherlands', 'Sweden', 'Norway', 'Denmark', 'Belgium', 'Switzerland', 'Austria', 'Ireland'];
+    const departments = ['Electronics', 'Clothing', 'Home & Garden', 'Sports', 'Books', 'Automotive', 'Health', 'Beauty', 'Toys', 'Grocery', 'Office', 'Pet Supplies', 'Music', 'Movies', 'Software', 'Tools', 'Jewelry', 'Games', 'Baby', 'Industrial'];
+    const companyNames = ['Acme Corp', 'TechVision', 'GlobalSoft', 'DataPrime', 'CloudWorks', 'InnovateTech', 'FutureSystems', 'NextGen Solutions', 'SmartByte', 'CyberCore', 'NetPro', 'DigiFlow', 'SynergyTech', 'AlphaByte', 'OmegaSoft', 'QuantumData', 'PrimeLogic', 'CoreTech', 'VelocityIO', 'NexusHub'];
+    const jobTitles = ['Software Engineer', 'Product Manager', 'Data Analyst', 'DevOps Engineer', 'UX Designer', 'QA Engineer', 'Technical Lead', 'Solutions Architect', 'Business Analyst', 'Project Manager', 'Scrum Master', 'Full Stack Developer', 'Frontend Developer', 'Backend Developer', 'Cloud Engineer', 'Security Analyst', 'Database Administrator', 'Network Engineer', 'System Administrator', 'IT Manager'];
+    const emailDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'icloud.com', 'proton.me', 'fastmail.com', 'zoho.com', 'aol.com', 'mail.com', 'example.com'];
+    const bloodTypes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+    const transactionTypes = ['credit', 'debit', 'transfer', 'payment', 'withdrawal', 'deposit', 'refund'];
+    const transactionStatus = ['pending', 'completed', 'failed', 'cancelled', 'processing'];
+    const orderStatus = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'];
+    const logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'TRACE'];
+    const services = ['api-gateway', 'auth-service', 'user-service', 'order-service', 'payment-service', 'notification-service', 'search-service', 'cache-service', 'queue-service', 'storage-service'];
+    const sensorTypes = ['temperature', 'humidity', 'pressure', 'motion', 'light', 'sound', 'proximity', 'accelerometer', 'gyroscope', 'magnetometer'];
+    const deviceStatus = ['online', 'offline', 'idle', 'active', 'error', 'maintenance'];
+
+    // Faker utilities
+    const faker = {
+      randomElement: (arr) => arr && arr.length > 0 ? arr[Math.floor(Math.random() * arr.length)] : null,
+      randomInt: (min, max) => Math.floor(Math.random() * (max - min + 1)) + min,
+      randomFloat: (min, max, decimals = 2) => parseFloat((Math.random() * (max - min) + min).toFixed(decimals)),
+      randomBoolean: () => Math.random() > 0.5,
+      
+      uuid: () => {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = Math.random() * 16 | 0;
+          const v = c === 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+        });
+      },
+      
+      string: {
+        alphanumeric: (len = 10) => {
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          return Array.from({length: len}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        }
+      },
+      
+      helpers: {
+        arrayElement: (arr) => faker.randomElement(arr)
+      }
+    };
+
+    // =============================================================================
+    // K6 METRICS - Search focused
+    // =============================================================================
+
+    const searchesExecuted = new Counter('searches_executed');
+    const searchErrors = new Rate('search_errors');
+    const searchDuration = new Trend('search_duration');
+    const resultsReturned = new Trend('results_returned');
+    const totalResultsFound = new Counter('total_results_found');
+    const emptyResults = new Counter('empty_results');
+    const clientErrors = new Counter('http_4xx_errors');
+    const serverErrors = new Counter('http_5xx_errors');
+    const timeoutErrors = new Counter('timeout_errors');
+    const activeUsers = new Gauge('active_users');
+
+    // Search type counters
+    const collectionSearches = new Counter('collection_searches');
+    const uriSearches = new Counter('uri_searches');
+    const wordSearches = new Counter('word_searches');
+    const fieldSearches = new Counter('field_searches');
+    const rangeSearches = new Counter('range_searches');
+    const combinedSearches = new Counter('combined_searches');
+    const learnedSearches = new Counter('learned_searches');
+
+    // User activity metrics
+    const userActions = new Counter('user_actions');
+    const browseActions = new Counter('browse_actions');
+    const searchActions = new Counter('search_actions');
+    const detailViewActions = new Counter('detail_view_actions');
+
+    // =============================================================================
+    // GLOBAL STATE - Learned from document scanning
+    // =============================================================================
+
+    // This will be populated in setup() from actual database documents
+    let learnedData = {
+      collections: [],
+      uris: [],
+      firstNames: [],
+      lastNames: [],
+      cities: [],
+      states: [],
+      emails: [],
+      companies: [],
+      departments: [],
+      terms: []
+    };
+
+    // CSV results collector - stored in memory during test
+    let csvResults = [];
+
+    // =============================================================================
+    // MARKLOGIC CONNECTION
+    // =============================================================================
+
+    const ML_HOST = __ENV.ML_HOST || 'localhost';
+    const ML_PORT = __ENV.ML_PORT || '8010';
+    const ML_USER = __ENV.ML_USER || 'admin';
+    const ML_PASSWORD = __ENV.ML_PASSWORD || 'admin';
+    const ML_DATABASE = __ENV.ML_DATABASE || 'Documents';
+    const ML_AUTH_TYPE = __ENV.ML_AUTH_TYPE || 'digest';
+    const ML_PROTOCOL = __ENV.ML_PROTOCOL || 'http';
+    const ML_COLLECTIONS = __ENV.ML_COLLECTIONS || 'k6-load-test';
+    const ML_URI_PREFIX = __ENV.ML_URI_PREFIX || '/k6-test/';
+    const BATCH_SIZE = parseInt(__ENV.BATCH_SIZE || '5', 10);
+    const SLEEP_DURATION = parseFloat(__ENV.SLEEP_DURATION || '0.5');
+    const PAGE_SIZE = parseInt(__ENV.PAGE_SIZE || '10', 10);
+    const SCAN_SAMPLE_SIZE = parseInt(__ENV.SCAN_SAMPLE_SIZE || '100', 10);
+
+    const ML_BASE_PATH = (__ENV.ML_BASE_PATH || '').replace(/\/+$/, '');
+    const baseUrl = `${ML_PROTOCOL}://${ML_HOST}:${ML_PORT}${ML_BASE_PATH}`;
+
+    // =============================================================================
+    // K6 OPTIONS - 8 hours continuous, ramp to 1000 VUs
+    // =============================================================================
+
+    function parseStages(stagesEnv) {
+      if (!stagesEnv) return null;
+      return stagesEnv.split(',').map(stage => {
+        const [duration, target] = stage.trim().split(':');
+        return { duration: duration, target: parseInt(target, 10) };
+      });
+    }
+
+    function buildStagesConfig() {
+      if (__ENV.K6_STAGES) return parseStages(__ENV.K6_STAGES);
+      
+      // Default: Ramp to 1000 users over 10 minutes, hold for ~8 hours
+      const maxVus = parseInt(__ENV.MAX_VUS || '1000', 10);
+      const holdHours = parseFloat(__ENV.HOLD_HOURS || '8');
+      
+      return [
+        { duration: '2m', target: 100 },
+        { duration: '2m', target: 250 },
+        { duration: '2m', target: 500 },
+        { duration: '2m', target: 750 },
+        { duration: '2m', target: maxVus },
+        { duration: `${holdHours}h`, target: maxVus },
+        { duration: '2m', target: 0 }
+      ];
+    }
+
+    export const options = {
+      stages: buildStagesConfig(),
+      thresholds: {
+        'http_req_duration': ['p(95)<5000'],
+        'http_req_failed': ['rate<0.1'],
+        'search_errors': ['rate<0.1'],
+        'searches_executed': ['count>0']
+      },
+      tags: {
+        testName: __ENV.TEST_NAME || 'marklogic-search-storm-8h',
+        environment: __ENV.ENVIRONMENT || 'kubernetes'
+      },
+      summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)', 'count']
+    };
+
+    // =============================================================================
+    // HTTP HELPERS
+    // =============================================================================
+
+    function makeRequest(method, url, body = null, tags = {}) {
+      const reqOpts = {
+        timeout: '60s',
+        tags: tags
+      };
+      
+      if (ML_AUTH_TYPE === 'digest') {
+        reqOpts.auth = 'digest';
+        if (body) {
+          reqOpts.headers = { 'Content-Type': 'application/json' };
+        }
+      } else {
+        reqOpts.headers = {
+          'Authorization': `Basic ${encoding.b64encode(`${ML_USER}:${ML_PASSWORD}`)}`
+        };
+        if (body) {
+          reqOpts.headers['Content-Type'] = 'application/json';
+        }
+      }
+      
+      if (method === 'GET') {
+        return http.get(url, reqOpts);
+      } else if (method === 'POST') {
+        return http.post(url, body, reqOpts);
+      }
+    }
+
+    // =============================================================================
+    // DOCUMENT SCANNER - Learn from actual database content
+    // =============================================================================
+
+    function scanDatabase() {
+      console.log('Scanning database to learn document structure...');
+      
+      const learned = {
+        collections: [],
+        uris: [],
+        firstNames: new Set(),
+        lastNames: new Set(),
+        cities: new Set(),
+        states: new Set(),
+        emails: new Set(),
+        companies: new Set(),
+        departments: new Set(),
+        terms: new Set(),
+        documentCount: 0
+      };
+      
+      // Get total document count
+      const countUrl = `${baseUrl}/v1/search?database=${encodeURIComponent(ML_DATABASE)}&format=json&pageLength=0`;
+      const countResp = makeRequest('GET', countUrl);
+      
+      if (countResp.status === 200) {
+        try {
+          const body = JSON.parse(countResp.body);
+          learned.documentCount = body.total || body['total-results'] || 0;
+        } catch (e) {
+          console.warn('Could not parse count response');
+        }
+      }
+      
+      // Sample documents to extract searchable terms
+      const sampleUrl = `${baseUrl}/v1/search?database=${encodeURIComponent(ML_DATABASE)}&format=json&pageLength=${SCAN_SAMPLE_SIZE}&view=results`;
+      const sampleResp = makeRequest('GET', sampleUrl);
+      
+      if (sampleResp.status === 200) {
+        try {
+          const body = JSON.parse(sampleResp.body);
+          const results = body.results || [];
+          
+          // Extract collections from facets if available
+          if (body.facets && body.facets.collection) {
+            const collFacets = body.facets.collection.facetValues || [];
+            for (const f of collFacets) {
+              if (f.name) learned.collections.push(f.name);
+            }
+          }
+          
+          for (const result of results) {
+            if (result.uri) {
+              learned.uris.push(result.uri);
+            }
+            
+            // Fetch actual document content for detailed analysis
+            if (result.uri && learned.uris.length <= 50) {
+              const docUrl = `${baseUrl}/v1/documents?uri=${encodeURIComponent(result.uri)}&database=${encodeURIComponent(ML_DATABASE)}&format=json`;
+              const docResp = makeRequest('GET', docUrl);
+              
+              if (docResp.status === 200) {
+                try {
+                  const doc = JSON.parse(docResp.body);
+                  extractTermsFromDocument(doc, learned);
+                } catch (e) {
+                  // Document might not be JSON
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Could not parse sample documents');
+        }
+      }
+      
+      // Convert sets to arrays
+      return {
+        collections: learned.collections.length > 0 ? learned.collections : ML_COLLECTIONS.split(','),
+        uris: learned.uris,
+        firstNames: Array.from(learned.firstNames),
+        lastNames: Array.from(learned.lastNames),
+        cities: Array.from(learned.cities),
+        states: Array.from(learned.states),
+        emails: Array.from(learned.emails),
+        companies: Array.from(learned.companies),
+        departments: Array.from(learned.departments),
+        terms: Array.from(learned.terms),
+        documentCount: learned.documentCount
+      };
+    }
+
+    function extractTermsFromDocument(doc, learned) {
+      // Extract common fields from faker-generated documents
+      if (doc.first_name) learned.firstNames.add(doc.first_name);
+      if (doc.last_name) learned.lastNames.add(doc.last_name);
+      if (doc.city) learned.cities.add(doc.city);
+      if (doc.state) learned.states.add(doc.state);
+      if (doc.email) learned.emails.add(doc.email);
+      if (doc.company) learned.companies.add(typeof doc.company === 'string' ? doc.company : doc.company.name);
+      if (doc.department) learned.departments.add(doc.department);
+      
+      // Extract from nested structures
+      if (doc.customer) {
+        if (doc.customer.name) learned.terms.add(doc.customer.name);
+        if (doc.customer.email) learned.emails.add(doc.customer.email);
+      }
+      if (doc.patient) {
+        if (doc.patient.first_name) learned.firstNames.add(doc.patient.first_name);
+        if (doc.patient.last_name) learned.lastNames.add(doc.patient.last_name);
+      }
+      if (doc.user) {
+        if (doc.user.username) learned.terms.add(doc.user.username);
+        if (doc.user.display_name) learned.terms.add(doc.user.display_name);
+      }
+      if (doc.address) {
+        if (doc.address.city) learned.cities.add(doc.address.city);
+        if (doc.address.state) learned.states.add(doc.address.state);
+      }
+      if (doc.shipping_address) {
+        if (doc.shipping_address.city) learned.cities.add(doc.shipping_address.city);
+      }
+      if (doc.merchant && doc.merchant.name) learned.companies.add(doc.merchant.name);
+      if (doc.service) learned.terms.add(doc.service);
+      if (doc.device_name) learned.terms.add(doc.device_name);
+      
+      // Extract any string values as potential search terms
+      extractStringValues(doc, learned.terms, 0, 3);
+    }
+
+    function extractStringValues(obj, terms, depth, maxDepth) {
+      if (depth > maxDepth || terms.size > 500) return;
+      
+      for (const key in obj) {
+        const value = obj[key];
+        if (typeof value === 'string' && value.length >= 3 && value.length <= 50) {
+          if (!/^[0-9\-:TZ.+]+$/.test(value) && !value.includes('@') && !value.includes('/')) {
+            terms.add(value);
+          }
+        } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          extractStringValues(value, terms, depth + 1, maxDepth);
+        }
+      }
+    }
+
+    // =============================================================================
+    // SEARCH QUERY GENERATORS - Using learned data
+    // =============================================================================
+
+    function generateSearchQuery(learned) {
+      const searchType = selectSearchType();
+      
+      switch (searchType) {
+        case 'collection':
+          collectionSearches.add(1);
+          return generateCollectionSearch(learned);
+        case 'uri':
+          uriSearches.add(1);
+          return generateUriSearch(learned);
+        case 'word':
+          wordSearches.add(1);
+          return generateWordSearch(learned);
+        case 'field':
+          fieldSearches.add(1);
+          return generateFieldSearch(learned);
+        case 'combined':
+          combinedSearches.add(1);
+          return generateCombinedSearch(learned);
+        case 'learned':
+          learnedSearches.add(1);
+          return generateLearnedSearch(learned);
+        default:
+          wordSearches.add(1);
+          return generateWordSearch(learned);
+      }
+    }
+
+    function selectSearchType() {
+      const types = ['collection', 'uri', 'word', 'field', 'combined', 'learned'];
+      const weights = [10, 5, 25, 25, 15, 20];
+      
+      const total = weights.reduce((a, b) => a + b, 0);
+      let r = Math.random() * total;
+      
+      for (let i = 0; i < types.length; i++) {
+        r -= weights[i];
+        if (r <= 0) return types[i];
+      }
+      return 'word';
+    }
+
+    function generateCollectionSearch(learned) {
+      const collections = learned.collections.length > 0 ? learned.collections : ML_COLLECTIONS.split(',');
+      const collection = faker.helpers.arrayElement(collections);
+      
+      return {
+        type: 'collection',
+        query: {
+          query: {
+            queries: [{
+              'collection-query': { uri: [collection] }
+            }]
+          }
+        },
+        description: `Collection: ${collection}`,
+        searchTerm: collection
+      };
+    }
+
+    function generateUriSearch(learned) {
+      const uriPrefix = learned.uris.length > 0 
+        ? faker.helpers.arrayElement(learned.uris).split('/').slice(0, -1).join('/') + '/'
+        : ML_URI_PREFIX;
+      
+      return {
+        type: 'uri',
+        query: {
+          query: {
+            queries: [{
+              'directory-query': { uri: [uriPrefix], depth: 'infinity' }
+            }]
+          }
+        },
+        description: `URI prefix: ${uriPrefix}`,
+        searchTerm: uriPrefix
+      };
+    }
+
+    function generateWordSearch(learned) {
+      const termPools = [
+        learned.firstNames.length > 0 ? learned.firstNames : firstNames,
+        learned.lastNames.length > 0 ? learned.lastNames : lastNames,
+        learned.cities.length > 0 ? learned.cities : cities,
+        learned.terms.length > 0 ? learned.terms : []
+      ].filter(p => p.length > 0);
+      
+      const pool = faker.helpers.arrayElement(termPools);
+      const term = faker.helpers.arrayElement(pool);
+      
+      return {
+        type: 'word',
+        query: {
+          query: {
+            queries: [{
+              'word-query': {
+                text: [term],
+                'term-option': ['case-insensitive']
+              }
+            }]
+          }
+        },
+        description: `Word: "${term}"`,
+        searchTerm: term
+      };
+    }
+
+    function generateFieldSearch(learned) {
+      const fieldOptions = [
+        { field: 'first_name', values: learned.firstNames.length > 0 ? learned.firstNames : firstNames },
+        { field: 'last_name', values: learned.lastNames.length > 0 ? learned.lastNames : lastNames },
+        { field: 'city', values: learned.cities.length > 0 ? learned.cities : cities },
+        { field: 'state', values: learned.states.length > 0 ? learned.states : states },
+        { field: 'department', values: learned.departments.length > 0 ? learned.departments : departments },
+        { field: 'company', values: learned.companies.length > 0 ? learned.companies : companyNames }
+      ].filter(f => f.values.length > 0);
+      
+      const fieldOpt = faker.helpers.arrayElement(fieldOptions);
+      const value = faker.helpers.arrayElement(fieldOpt.values);
+      
+      return {
+        type: 'field',
+        query: {
+          query: {
+            queries: [{
+              'value-query': {
+                'json-property': fieldOpt.field,
+                text: [value],
+                'term-option': ['case-insensitive']
+              }
+            }]
+          }
+        },
+        description: `Field ${fieldOpt.field}="${value}"`,
+        searchTerm: `${fieldOpt.field}:${value}`
+      };
+    }
+
+    function generateCombinedSearch(learned) {
+      const collections = learned.collections.length > 0 ? learned.collections : ML_COLLECTIONS.split(',');
+      const collection = faker.helpers.arrayElement(collections);
+      const cityPool = learned.cities.length > 0 ? learned.cities : cities;
+      const city = faker.helpers.arrayElement(cityPool);
+      
+      return {
+        type: 'combined',
+        query: {
+          query: {
+            queries: [{
+              'and-query': {
+                queries: [
+                  { 'collection-query': { uri: [collection] } },
+                  { 'value-query': { 'json-property': 'city', text: [city] } }
+                ]
+              }
+            }]
+          }
+        },
+        description: `Collection=${collection} AND city="${city}"`,
+        searchTerm: `${collection}+${city}`
+      };
+    }
+
+    function generateLearnedSearch(learned) {
+      const allTerms = [
+        ...learned.terms,
+        ...learned.firstNames,
+        ...learned.lastNames,
+        ...learned.cities,
+        ...learned.emails.map(e => e.split('@')[0])
+      ].filter(t => t && t.length > 2);
+      
+      if (allTerms.length === 0) {
+        return generateWordSearch(learned);
+      }
+      
+      const numTerms = faker.randomInt(1, 3);
+      const terms = [];
+      for (let i = 0; i < numTerms && i < allTerms.length; i++) {
+        terms.push(faker.helpers.arrayElement(allTerms));
+      }
+      
+      const searchText = terms.join(' ');
+      
+      return {
+        type: 'learned',
+        query: {
+          query: {
+            queries: [{
+              'word-query': {
+                text: terms,
+                'term-option': ['case-insensitive']
+              }
+            }]
+          }
+        },
+        description: `Learned: "${searchText}"`,
+        searchTerm: searchText
+      };
+    }
+
+    // =============================================================================
+    // SEARCH EXECUTION
+    // =============================================================================
+
+    function executeSearch(searchQuery) {
+      const start = faker.randomInt(1, 100);
+      const url = `${baseUrl}/v1/search?database=${encodeURIComponent(ML_DATABASE)}&format=json&pageLength=${PAGE_SIZE}&start=${start}`;
+      
+      const startTime = Date.now();
+      const response = makeRequest('POST', url, JSON.stringify(searchQuery.query), {
+        name: 'MarkLogic_Search',
+        search_type: searchQuery.type
+      });
+      const duration = Date.now() - startTime;
+      
+      return { response, duration, searchQuery };
+    }
+
+    function executeStringSearch(queryText) {
+      const url = `${baseUrl}/v1/search?database=${encodeURIComponent(ML_DATABASE)}&format=json&pageLength=${PAGE_SIZE}&q=${encodeURIComponent(queryText)}`;
+      
+      const startTime = Date.now();
+      const response = makeRequest('GET', url, null, {
+        name: 'MarkLogic_StringSearch',
+        search_type: 'string_query'
+      });
+      const duration = Date.now() - startTime;
+      
+      return { response, duration, queryText };
+    }
+
+    function fetchDocument(uri) {
+      const url = `${baseUrl}/v1/documents?uri=${encodeURIComponent(uri)}&database=${encodeURIComponent(ML_DATABASE)}&format=json`;
+      
+      const startTime = Date.now();
+      const response = makeRequest('GET', url, null, {
+        name: 'MarkLogic_DocumentFetch',
+        action: 'detail_view'
+      });
+      const duration = Date.now() - startTime;
+      
+      return { response, duration, uri };
+    }
+
+    // =============================================================================
+    // USER ACTIVITY SIMULATION
+    // =============================================================================
+
+    function simulateUserActivity(learned) {
+      const vuId = exec.vu.idInTest;
+      const iterationId = exec.vu.iterationInScenario;
+      
+      activeUsers.add(1);
+      
+      const activityType = selectActivityType();
+      
+      let result = null;
+      
+      switch (activityType) {
+        case 'browse':
+          result = simulateBrowse(learned);
+          browseActions.add(1);
+          break;
+        case 'search':
+          result = simulateSearch(learned);
+          searchActions.add(1);
+          break;
+        case 'detail':
+          result = simulateDetailView(learned);
+          detailViewActions.add(1);
+          break;
+        default:
+          result = simulateSearch(learned);
+          searchActions.add(1);
+      }
+      
+      userActions.add(1);
+      
+      return result;
+    }
+
+    function selectActivityType() {
+      const activities = ['browse', 'search', 'search', 'search', 'detail'];
+      return faker.helpers.arrayElement(activities);
+    }
+
+    function simulateBrowse(learned) {
+      const searchQuery = generateCollectionSearch(learned);
+      return executeSearch(searchQuery);
+    }
+
+    function simulateSearch(learned) {
+      const searchQuery = generateSearchQuery(learned);
+      return executeSearch(searchQuery);
+    }
+
+    function simulateDetailView(learned) {
+      const searchQuery = generateWordSearch(learned);
+      const searchResult = executeSearch(searchQuery);
+      
+      if (searchResult.response.status === 200) {
+        try {
+          const body = JSON.parse(searchResult.response.body);
+          const results = body.results || [];
+          
+          if (results.length > 0) {
+            const doc = faker.helpers.arrayElement(results);
+            if (doc.uri) {
+              sleep(faker.randomFloat(0.1, 0.5));
+              return fetchDocument(doc.uri);
+            }
+          }
+        } catch (e) {
+          // Fall through
+        }
+      }
+      
+      return searchResult;
+    }
+
+    // =============================================================================
+    // CSV RESULT TRACKING
+    // =============================================================================
+
+    function recordSearchResult(vuId, iteration, searchType, searchTerm, status, duration, resultCount) {
+      if (csvResults.length < 100000) {
+        csvResults.push({
+          timestamp: new Date().toISOString(),
+          vu_id: vuId,
+          iteration: iteration,
+          search_type: searchType,
+          search_term: searchTerm,
+          status: status,
+          duration_ms: duration,
+          result_count: resultCount
+        });
+      }
+    }
+
+    // =============================================================================
+    // MAIN TEST FUNCTION
+    // =============================================================================
+
+    export default function (data) {
+      const learned = data.learnedData || learnedData;
+      const vuId = exec.vu.idInTest;
+      const iteration = exec.vu.iterationInScenario;
+      
+      for (let i = 0; i < BATCH_SIZE; i++) {
+        const result = simulateUserActivity(learned);
+        
+        if (!result) continue;
+        
+        const { response, duration, searchQuery, queryText, uri } = result;
+        
+        searchDuration.add(duration);
+        searchesExecuted.add(1);
+        
+        const success = check(response, {
+          'request successful': (r) => r.status === 200 || r.status === 404,
+          'response time < 5s': (r) => r.timings.duration < 5000
+        });
+        
+        let resultCount = 0;
+        let searchTerm = queryText || (searchQuery ? searchQuery.searchTerm : uri) || 'unknown';
+        let searchType = searchQuery ? searchQuery.type : (queryText ? 'string' : 'document');
+        
+        if (success && response.status === 200) {
+          searchErrors.add(0);
+          
+          try {
+            const responseBody = JSON.parse(response.body);
+            resultCount = responseBody.total || responseBody['total-results'] || 1;
+            
+            resultsReturned.add(resultCount);
+            totalResultsFound.add(resultCount);
+            
+            if (resultCount === 0) {
+              emptyResults.add(1);
+            }
+          } catch (e) {
+            resultsReturned.add(1);
+          }
+        } else {
+          searchErrors.add(1);
+          
+          if (response.status >= 400 && response.status < 500) {
+            clientErrors.add(1);
+          } else if (response.status >= 500) {
+            serverErrors.add(1);
+          } else if (response.timings && response.timings.duration >= 60000) {
+            timeoutErrors.add(1);
+          }
+        }
+        
+        recordSearchResult(
+          vuId,
+          iteration,
+          searchType,
+          searchTerm,
+          response.status,
+          duration,
+          resultCount
+        );
+        
+        if (i < BATCH_SIZE - 1) {
+          sleep(faker.randomFloat(0.1, 0.3));
+        }
+      }
+      
+      sleep(SLEEP_DURATION);
+    }
+
+    // =============================================================================
+    // LIFECYCLE HOOKS
+    // =============================================================================
+
+    export function setup() {
+      console.log('=== MarkLogic Search Storm - 8 Hour User Simulation ===');
+      console.log(`Target: ${baseUrl}`);
+      console.log(`Database: ${ML_DATABASE}`);
+      console.log(`Auth Type: ${ML_AUTH_TYPE}`);
+      console.log(`Max VUs: ${__ENV.MAX_VUS || '1000'}`);
+      console.log(`Hold Duration: ${__ENV.HOLD_HOURS || '8'} hours`);
+      console.log(`Actions per iteration: ${BATCH_SIZE}`);
+      console.log(`Sample size for learning: ${SCAN_SAMPLE_SIZE}`);
+      console.log('Stages:', JSON.stringify(options.stages, null, 2));
+      console.log('='.repeat(60));
+      
+      console.log('Phase 1: Scanning database to learn document patterns...');
+      const learned = scanDatabase();
+      
+      console.log(`Learned data summary:`);
+      console.log(`  - Total documents: ${learned.documentCount}`);
+      console.log(`  - Collections: ${learned.collections.length}`);
+      console.log(`  - Sample URIs: ${learned.uris.length}`);
+      console.log(`  - First names: ${learned.firstNames.length}`);
+      console.log(`  - Last names: ${learned.lastNames.length}`);
+      console.log(`  - Cities: ${learned.cities.length}`);
+      console.log(`  - Companies: ${learned.companies.length}`);
+      console.log(`  - General terms: ${learned.terms.length}`);
+      console.log('='.repeat(60));
+      
+      return {
+        startTime: new Date().toISOString(),
+        learnedData: learned
+      };
+    }
+
+    export function teardown(data) {
+      console.log('=== Search Test Complete ===');
+      console.log(`Started: ${data.startTime}`);
+      console.log(`Ended: ${new Date().toISOString()}`);
+      console.log(`CSV records collected: ${csvResults.length}`);
+    }
+
+    // =============================================================================
+    // CSV EXPORT - handleSummary generates the CSV file
+    // =============================================================================
+
+    export function handleSummary(data) {
+      let csv = 'timestamp,vu_id,iteration,search_type,search_term,status,duration_ms,result_count\n';
+      
+      for (const row of csvResults) {
+        const term = String(row.search_term || '').replace(/"/g, '""');
+        csv += `${row.timestamp},${row.vu_id},${row.iteration},"${row.search_type}","${term}",${row.status},${row.duration_ms},${row.result_count}\n`;
+      }
+      
+      const summary = {
+        test_name: __ENV.TEST_NAME || 'marklogic-search-storm',
+        start_time: data.setup_data ? data.setup_data.startTime : 'unknown',
+        end_time: new Date().toISOString(),
+        total_searches: data.metrics.searches_executed ? data.metrics.searches_executed.values.count : 0,
+        total_results_found: data.metrics.total_results_found ? data.metrics.total_results_found.values.count : 0,
+        error_rate: data.metrics.search_errors ? data.metrics.search_errors.values.rate : 0,
+        avg_duration_ms: data.metrics.search_duration ? data.metrics.search_duration.values.avg : 0,
+        p95_duration_ms: data.metrics.search_duration ? data.metrics.search_duration.values['p(95)'] : 0,
+        max_vus: data.metrics.vus_max ? data.metrics.vus_max.values.max : 0,
+        search_types: {
+          collection: data.metrics.collection_searches ? data.metrics.collection_searches.values.count : 0,
+          uri: data.metrics.uri_searches ? data.metrics.uri_searches.values.count : 0,
+          word: data.metrics.word_searches ? data.metrics.word_searches.values.count : 0,
+          field: data.metrics.field_searches ? data.metrics.field_searches.values.count : 0,
+          combined: data.metrics.combined_searches ? data.metrics.combined_searches.values.count : 0,
+          learned: data.metrics.learned_searches ? data.metrics.learned_searches.values.count : 0
+        },
+        user_actions: {
+          browse: data.metrics.browse_actions ? data.metrics.browse_actions.values.count : 0,
+          search: data.metrics.search_actions ? data.metrics.search_actions.values.count : 0,
+          detail_view: data.metrics.detail_view_actions ? data.metrics.detail_view_actions.values.count : 0
+        }
+      };
+      
+      return {
+        '/tmp/search-results.csv': csv,
+        '/tmp/search-summary.json': JSON.stringify(summary, null, 2),
+        'stdout': textSummary(data, { indent: ' ', enableColors: true })
+      };
+    }
+
+    function textSummary(data, options) {
+      const lines = [];
+      lines.push('\n' + '='.repeat(60));
+      lines.push('MARKLOGIC SEARCH STORM - FINAL SUMMARY');
+      lines.push('='.repeat(60));
+      
+      if (data.metrics.searches_executed) {
+        lines.push(`Total Searches: ${data.metrics.searches_executed.values.count}`);
+      }
+      if (data.metrics.search_duration) {
+        lines.push(`Avg Duration: ${data.metrics.search_duration.values.avg.toFixed(2)}ms`);
+        lines.push(`P95 Duration: ${data.metrics.search_duration.values['p(95)'].toFixed(2)}ms`);
+      }
+      if (data.metrics.search_errors) {
+        lines.push(`Error Rate: ${(data.metrics.search_errors.values.rate * 100).toFixed(2)}%`);
+      }
+      if (data.metrics.total_results_found) {
+        lines.push(`Total Results Found: ${data.metrics.total_results_found.values.count}`);
+      }
+      if (data.metrics.empty_results) {
+        lines.push(`Empty Result Searches: ${data.metrics.empty_results.values.count}`);
+      }
+      
+      lines.push('\nSearch Type Breakdown:');
+      if (data.metrics.collection_searches) lines.push(`  Collection: ${data.metrics.collection_searches.values.count}`);
+      if (data.metrics.word_searches) lines.push(`  Word: ${data.metrics.word_searches.values.count}`);
+      if (data.metrics.field_searches) lines.push(`  Field: ${data.metrics.field_searches.values.count}`);
+      if (data.metrics.learned_searches) lines.push(`  Learned: ${data.metrics.learned_searches.values.count}`);
+      if (data.metrics.combined_searches) lines.push(`  Combined: ${data.metrics.combined_searches.values.count}`);
+      
+      lines.push('\nUser Activity:');
+      if (data.metrics.browse_actions) lines.push(`  Browse: ${data.metrics.browse_actions.values.count}`);
+      if (data.metrics.search_actions) lines.push(`  Search: ${data.metrics.search_actions.values.count}`);
+      if (data.metrics.detail_view_actions) lines.push(`  Detail View: ${data.metrics.detail_view_actions.values.count}`);
+      
+      lines.push('\nCSV Results: /tmp/search-results.csv');
+      lines.push('JSON Summary: /tmp/search-summary.json');
+      lines.push('='.repeat(60) + '\n');
+      
+      return lines.join('\n');
+    }

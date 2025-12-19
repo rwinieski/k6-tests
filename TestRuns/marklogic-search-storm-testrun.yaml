@@ -1,0 +1,93 @@
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: marklogic-search-storm-8h
+  namespace: ml
+  labels:
+    app: k6-load-test
+    test-type: marklogic-search
+spec:
+  parallelism: 2
+  script:
+    configMap:
+      name: marklogic-search-storm-script
+      file: marklogic-search-storm.js
+  runner:
+    image: grafana/k6:latest
+    env:
+      # Prometheus Remote Write configuration for k6 test metrics
+      - name: K6_OUT
+        value: "experimental-prometheus-rw"
+      - name: K6_PROMETHEUS_RW_SERVER_URL
+        value: "http://rancher-monitoring-prometheus.cattle-monitoring-system.svc.cluster.local:9090/api/v1/write"
+      - name: K6_PROMETHEUS_RW_TREND_STATS
+        value: "p(50),p(90),p(95),p(99),min,max,avg,med,count"
+      - name: K6_PROMETHEUS_RW_PUSH_INTERVAL
+        value: "5s"
+      - name: K6_TAG_TESTID
+        value: "marklogic-search-storm-8h"
+      # MarkLogic Connection
+      - name: ML_HOST
+        value: "marklogic-haproxy.ml.svc.cluster.local"
+      - name: ML_PORT
+        value: "443"
+      - name: ML_DATABASE
+        value: "Documents"
+      - name: ML_AUTH_TYPE
+        value: "basic"
+      - name: ML_PROTOCOL
+        value: "http"
+      - name: ML_BASE_PATH
+        value: "/console"
+      # Credentials from secret
+      - name: ML_USER
+        valueFrom:
+          secretKeyRef:
+            name: ml1
+            key: username
+      - name: ML_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: ml1
+            key: password
+      # Search Configuration
+      - name: ML_COLLECTIONS
+        value: "k6-faker-inline-test,load-test,ri6i4xlarge"
+      - name: ML_URI_PREFIX
+        value: "/k6-faker-inline-test-ri6i4xlarge/"
+      # Actions per VU iteration (user actions per cycle)
+      - name: BATCH_SIZE
+        value: "5"
+      # Results per search page
+      - name: PAGE_SIZE
+        value: "10"
+      # Number of documents to scan for learning search terms
+      - name: SCAN_SAMPLE_SIZE
+        value: "100"
+      # Sleep between iterations (simulates user think time)
+      - name: SLEEP_DURATION
+        value: "30"
+      # Debug mode
+      - name: DEBUG
+        value: "false"
+      # Test metadata
+      - name: TEST_NAME
+        value: "marklogic-search-storm-8h-1000vu"
+      - name: ENVIRONMENT
+        value: "kubernetes"
+      # Max VUs to ramp up to (500 concurrent users)
+      - name: MAX_VUS
+        value: "500"
+      # Hours to hold at max VUs (8 hours continuous)
+      - name: HOLD_HOURS
+        value: "8"
+    # Node selector for scheduling
+    nodeSelector:
+      role: ml-testrun
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "15000m"
+        memory: "128Gi"
