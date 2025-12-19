@@ -77,7 +77,7 @@ spec:
         value: "kubernetes"
       # Max VUs to ramp up to (500 concurrent users)
       - name: MAX_VUS
-        value: "500"
+        value: "100"
       # Hours to hold at max VUs (8 hours continuous)
       - name: HOLD_HOURS
         value: "8"
