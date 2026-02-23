@@ -104,3 +104,14 @@ spec:
       enabled: true
       size: 50Gi
       storageClassName: "gp3"
+  - name: enode
+    replicas: 1
+    groupConfig:
+      name: enode
+    isBootstrap: true
+    haproxy:
+      enabled: true
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClassName: "gp3"
