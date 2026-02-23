@@ -4,7 +4,7 @@ metadata:
   name: ml-k6
   annotations: {}
 spec:
-  image: "progressofficial/marklogic-db:12.0.1-ubi9-rootless-2.2.3"
+  image: "progressofficial/marklogic-db:11.3.3-ubi-2.2.2"
   ## It is recommended to use Kubernetes secrets to store the admin credentials
   ## To create a secret, run the following command in the same namespace as the CR:
   ## kubectl create secret generic admincreds --from-literal=username=admin --from-literal=password=admin
@@ -12,18 +12,17 @@ spec:
   persistence:
     enabled: true
     size: 50Gi
-    storageClassName: "gp3-speed"
+    storageClassName: "gp3"
   podSecurityContext:
     fsGroup: 2 # MarkLogic runs as user 1000 and group 2 (users) **!!Must not be changed!!**
     fsGroupChangePolicy: OnRootMismatch
   securityContext:
     runAsUser: 1000 # MarkLogic runs as user 1000 and group 2 (users) **!!Must not be changed!!**
     runAsNonRoot: true
-    allowPrivilegeEscalation: false
+    allowPrivilegeEscalation: true
     readOnlyRootFilesystem: false
     capabilities:
-      drop:
-        - "ALL"
+      add: ["SYS_PTRACE"]
   auth:
     secretName: ml1
 
@@ -32,8 +31,6 @@ spec:
 # Configuration for the HAProxy load balancer
 ## An out of box load balancer configured to handle cookie based session affinity that's required by most MarkLogic applications.
   haproxy:
-    nodeSelector: 
-      role: rwinieski-node
     enabled: true
     pathBasedRouting: true
     frontendPort: 443
@@ -59,7 +56,7 @@ spec:
   ## Configure Ingress
   ## ref: https://kubernetes.io/docs/concepts/services-networking/ingress/
     ingress: 
-      enabled: true
+      enabled: false
       ingressClassName: "alb"
 
       ## Ingress labels
@@ -96,9 +93,7 @@ spec:
     
   markLogicGroups:
   - name: dnode
-    nodeSelector: 
-      role: ml-k6
-    replicas: 5
+    replicas: 1
     groupConfig:
       name: dnode
     isBootstrap: true
@@ -106,5 +101,5 @@ spec:
       enabled: true
     persistence:
       enabled: true
-      size: 500Gi
-      storageClassName: "gp3-speed"
+      size: 50Gi
+      storageClassName: "gp3"

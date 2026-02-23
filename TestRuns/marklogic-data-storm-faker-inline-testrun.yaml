@@ -1,11 +1,11 @@
 apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
-  name: marklogic-data-storm-10h-interval-ri6i4xlarge
+  name: marklogic-data-storm-test-pv-resize
   namespace: ml
   labels:
     app: k6-load-test
-    test-type: marklogic-10h-interval-ri6i4xlarge
+    test-type: marklogic-test-pv-resize
 spec:
   parallelism: 1  # Single k6 instance, VUs are managed internally
   
@@ -31,7 +31,7 @@ spec:
       - name: K6_PROMETHEUS_RW_PUSH_INTERVAL
         value: "5s"
       - name: K6_TAG_TESTID
-        value: "marklogic-10h-interval-ri6i4xlarge"
+        value: "marklogic-test-pv-resize"
       # MarkLogic Connection Settings
       - name: ML_HOST
         value: "marklogic-haproxy.ml.svc.cluster.local"
@@ -58,9 +58,9 @@ spec:
       - name: ML_BASE_PATH
         value: "/console"
       - name: ML_URI_PREFIX
-        value: "/k6-faker-inline-test-ri6i4xlarge/"
+        value: "/k6-faker-inline-test-pv-resize/"
       - name: ML_COLLECTIONS
-        value: "k6-faker-inline-test,load-test,ri6i4xlarge"
+        value: "k6-faker-inline-test,load-test,pv-resize"
       
       # Document Generation Settings
       # Supported types: standard, minimal, extended, financial, ecommerce, healthcare, iot, social, log
@@ -74,9 +74,9 @@ spec:
       # DOCS_PER_REQUEST = number of documents per bulk POST request
       # Total docs per iteration = BATCH_SIZE × DOCS_PER_REQUEST = 2000 × 200 = 400,000 docs
       - name: BATCH_SIZE
-        value: "2000"
-      - name: DOCS_PER_REQUEST
         value: "200"
+      - name: DOCS_PER_REQUEST
+        value: "20"
       - name: SLEEP_DURATION
         value: "0"
       
@@ -89,7 +89,7 @@ spec:
       
       # Test metadata
       - name: TEST_NAME
-        value: "marklogic-10h-interval-ri6i4xlarge"
+        value: "marklogic-test-pv-resize"
       - name: ENVIRONMENT
         value: "development"
       
@@ -98,14 +98,14 @@ spec:
         value: "false"
     
     # Resource limits
-    resources:
-      requests:
-        cpu: "500m"
-        memory: "512Mi"
-      limits:
-        cpu: "15000m"
-        memory: "128Gi"
+    # resources:
+    #   requests:
+    #     cpu: "500m"
+    #     memory: "512Mi"
+    #   limits:
+    #     cpu: "15000m"
+    #     memory: "128Gi"
     
     # Node selector - schedule k6 runners on specific nodes
-    nodeSelector:
-      role: ml-testrun
+    # nodeSelector:
+    #   role: ml-testrun
