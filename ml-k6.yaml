@@ -3,6 +3,7 @@ kind: MarklogicCluster
 metadata:
   name: ml-k6
   annotations: {}
+  namespace: ml
 spec:
   image: "progressofficial/marklogic-db:11.3.3-ubi-2.2.2"
   ## It is recommended to use Kubernetes secrets to store the admin credentials
