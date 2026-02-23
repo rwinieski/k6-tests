@@ -108,7 +108,6 @@ spec:
     replicas: 1
     groupConfig:
       name: enode
-    isBootstrap: true
     haproxy:
       enabled: true
     persistence:
